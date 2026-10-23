@@ -36,7 +36,9 @@ public class DatabaseIndexManager {
 	// Four full VARCHAR(255) utf8mb4 columns exceed InnoDB's 3072-byte key limit, hence the prefixes;
 	// equality lookups still use the index.
 	static final List<IndexDefinition> INDEXES = List.of(
-			// POST /digitalAsset/lookup and the source/supplier/brand/origAssetName filters
+			// POST /digitalAsset/lookup: lookup_key_hash IN (...)
+			new IndexDefinition("idx_products_lookup_key_hash", "products", "lookup_key_hash"),
+			// GET /digitalAsset source/supplier/brand/origAssetName filters
 			new IndexDefinition("idx_products_lookup", "products",
 					"source(100), supplier(100), brand(100), orig_asset_name(191), active"),
 			// GET /digitalAsset with ?active=..., sorted by createdOn

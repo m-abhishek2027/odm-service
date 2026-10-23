@@ -1,0 +1,312 @@
+{
+  "info": {
+    "name": "odm-service",
+    "description": "ODM digital asset metadata API. Set baseUrl to the local server or the Cloud Run URL.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "uuid",
+      "value": "1fa365d8-3dd4-42ef-a463-5993aed9479a"
+    }
+  ],
+  "item": [
+    {
+      "name": "Lookup (AEM)",
+      "item": [
+        {
+          "name": "Lookup - single (FOUND)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-test-001"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/lookup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"referenceId\": \"aem-asset-001\",\n      \"fileName\": \"13cb25186_01_009.jpg\",\n      \"source\": \"external\",\n      \"supplier\": \"autocomp\",\n      \"brand\": \"bosch\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Lookup - populated asset (FOUND, all AEM fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-test-003"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/lookup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"referenceId\": \"aem-asset-010\",\n      \"fileName\": \"BC905_front.jpg\",\n      \"source\": \"External\",\n      \"supplier\": \"AutoComp\",\n      \"brand\": \"Bosch\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Lookup - batch (every status: FOUND, DUPLICATE, NOT_FOUND, INVALID, DELETED)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-test-002"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/lookup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"referenceId\": \"aem-asset-001\",\n      \"fileName\": \"13cb25186_01_009.jpg\",\n      \"source\": \"external\",\n      \"supplier\": \"autocomp\",\n      \"brand\": \"bosch\"\n    },\n    {\n      \"referenceId\": \"aem-asset-002\",\n      \"fileName\": \"11cb25125_02_002.jpg\",\n      \"source\": \"external\",\n      \"supplier\": \"autocomp\",\n      \"brand\": \"bosch\"\n    },\n    {\n      \"referenceId\": \"aem-asset-003\",\n      \"fileName\": \"img_0000.gif\",\n      \"source\": \"external\",\n      \"supplier\": \"autocomp\",\n      \"brand\": \"bosch\"\n    },\n    {\n      \"referenceId\": \"aem-asset-004\",\n      \"fileName\": \"sunset-1.jpeg\",\n      \"source\": \"source\",\n      \"supplier\": \"supplier\",\n      \"brand\": \"Adidas\"\n    },\n    {\n      \"referenceId\": \"aem-asset-005\",\n      \"fileName\": \"0bck4ymbo.jpg\",\n      \"source\": \"external\",\n      \"brand\": \"delphi\"\n    },\n    {\n      \"referenceId\": \"aem-asset-006\",\n      \"fileName\": \"deleted-test-asset.jpg\",\n      \"source\": \"test\",\n      \"supplier\": \"odm-test\",\n      \"brand\": \"test-brand\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Lookup - case and spaces ignored (FOUND)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/lookup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"referenceId\": \"aem-asset-006\",\n      \"fileName\": \" 13CB25186_01_009.JPG \",\n      \"source\": \"EXTERNAL\",\n      \"supplier\": \"AutoComp\",\n      \"brand\": \"Bosch\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Lookup - duplicate referenceId (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/lookup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"referenceId\": \"aem-asset-001\",\n      \"fileName\": \"13cb25186_01_009.jpg\",\n      \"source\": \"external\",\n      \"supplier\": \"autocomp\",\n      \"brand\": \"bosch\"\n    },\n    {\n      \"referenceId\": \"aem-asset-001\",\n      \"fileName\": \"0bck4ymbo.jpg\",\n      \"source\": \"external\",\n      \"supplier\": \"delphiauto\",\n      \"brand\": \"delphi\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Lookup - missing referenceId (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/lookup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"fileName\": \"0bck4ymbo.jpg\",\n      \"source\": \"external\",\n      \"supplier\": \"delphiauto\",\n      \"brand\": \"delphi\"\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Digital assets",
+      "item": [
+        {
+          "name": "Get all (filters + paging)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/digitalAsset?offset=0&limit=20&active=true&source=external&supplier=autocomp&brand=bosch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "digitalAsset"
+              ],
+              "query": [
+                {
+                  "key": "offset",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "active",
+                  "value": "true"
+                },
+                {
+                  "key": "source",
+                  "value": "external"
+                },
+                {
+                  "key": "supplier",
+                  "value": "autocomp"
+                },
+                {
+                  "key": "brand",
+                  "value": "bosch"
+                },
+                {
+                  "key": "origAssetName",
+                  "value": "11cb25125_02_002.jpg",
+                  "disabled": true
+                },
+                {
+                  "key": "assetName",
+                  "value": "13cb",
+                  "disabled": true
+                },
+                {
+                  "key": "createdOnFrom",
+                  "value": "2026-10-01T00:00:00",
+                  "disabled": true
+                },
+                {
+                  "key": "createdOnTo",
+                  "value": "2026-12-31T23:59:59",
+                  "disabled": true
+                },
+                {
+                  "key": "createdBy",
+                  "value": "gcs-import",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get by UUID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/digitalAsset/{{uuid}}"
+          }
+        },
+        {
+          "name": "Add asset(s)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "postman"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset",
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"source\": \"internal-pim\",\n    \"supplier\": \"Adidas AG\",\n    \"brand\": \"Adidas\",\n    \"assetName\": \"running-shoe-hero.jpg\",\n    \"origAssetName\": \"running-shoe-hero.jpg\",\n    \"title\": \"Running Shoe Hero\",\n    \"description\": \"Hero banner for SS26 campaign\",\n    \"assetType\": \"stills\",\n    \"colorSpace\": \"RGB\",\n    \"language\": [\"en\"],\n    \"productRegion\": [\"na\"],\n    \"channelName\": [\"digital\"],\n    \"productLine\": [\"running\"],\n    \"productCategory\": [\"footwear\"]\n  }\n]"
+            }
+          }
+        },
+        {
+          "name": "Update by UUID (blank fields are ignored)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "aem"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/{{uuid}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"origFileType\": \"TIFF\",\n  \"adjFileType\": \"JPEG\",\n  \"fileSource\": \"External\",\n  \"origPixelSizeWidth\": 4000,\n  \"origPixelSizeHeight\": 3000,\n  \"adjPixelSizeWidth\": 2000,\n  \"adjPixelSizeHeight\": 1500,\n  \"dpi\": 300,\n  \"fileSizeInKB\": 845.6,\n  \"isLayered\": false,\n  \"hasWatermark\": false,\n  \"okThumb\": true,\n  \"okSmall\": true,\n  \"okMedium\": true,\n  \"okLarge\": true,\n  \"okExtraLarge\": false,\n  \"okWhitespace\": true,\n  \"okLightDark\": true,\n  \"colorSpace\": \"RGB\",\n  \"dateProcessed\": \"2026-10-23T10:30:00\",\n  \"title\": \"\",\n  \"description\": null\n}"
+            }
+          }
+        },
+        {
+          "name": "Soft delete by UUID",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "postman"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/{{uuid}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "GCS import - dry run",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/admin/import/gcs?dryRun=true"
+          }
+        },
+        {
+          "name": "GCS import - run",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "gcs-import"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/import/gcs"
+          }
+        },
+        {
+          "name": "DB index status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/db/indexes"
+          }
+        },
+        {
+          "name": "DB create missing indexes",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/admin/db/indexes"
+          }
+        }
+      ]
+    }
+  ]
+}

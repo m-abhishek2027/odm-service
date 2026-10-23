@@ -1,14 +1,12 @@
 package com.odm.repo;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.util.StringUtils;
 
-import com.odm.dto.AssetLookupKey;
 import com.odm.dto.DigitalAssetSearchCriteria;
 import com.odm.entity.Product;
 
@@ -69,20 +67,6 @@ public final class ProductSpecifications {
 			}
 
 			return cb.and(predicates.toArray(Predicate[]::new));
-		};
-	}
-
-	// active AND ((source, supplier, brand, origAssetName) = key1 OR ... = keyN), as one query
-	public static Specification<Product> activeAndMatchingAnyKey(Collection<AssetLookupKey> keys) {
-		return (root, query, cb) -> {
-			Predicate[] anyKey = keys.stream()
-					.map(k -> cb.and(
-							cb.equal(root.get("source"), k.getSource()),
-							cb.equal(root.get("supplier"), k.getSupplier()),
-							cb.equal(root.get("brand"), k.getBrand()),
-							cb.equal(root.get("origAssetName"), k.getOrigAssetName())))
-					.toArray(Predicate[]::new);
-			return cb.and(cb.isTrue(root.get("active")), cb.or(anyKey));
 		};
 	}
 

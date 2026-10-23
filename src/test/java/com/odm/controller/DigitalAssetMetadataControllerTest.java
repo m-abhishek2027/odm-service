@@ -2,16 +2,19 @@ package com.odm.controller;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -30,13 +33,16 @@ import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
-import com.odm.dto.AssetLookupKey;
-import com.odm.dto.AssetLookupResult;
+import com.odm.dto.AssetLookupResponse;
+import com.odm.dto.AssetMetadataItem;
+import com.odm.dto.LookupResult;
 import com.odm.dto.DigitalAssetListResponse;
 import com.odm.dto.ProductRequest;
 import com.odm.entity.ColorSpace;
 import com.odm.entity.Product;
+import com.odm.exception.InvalidLookupRequestException;
 import com.odm.exception.ResourceNotFoundException;
+import com.odm.service.AssetLookupService;
 import com.odm.service.DigitalAssetMetadataService;
 
 @WebMvcTest(DigitalAssetMetadataController.class)
@@ -50,6 +56,9 @@ class DigitalAssetMetadataControllerTest {
 
 	@MockitoBean
 	private DigitalAssetMetadataService digitalAssetMetadataService;
+
+	@MockitoBean
+	private AssetLookupService assetLookupService;
 
 	private static Product product(String title) {
 		Product product = new Product();
@@ -228,102 +237,229 @@ class DigitalAssetMetadataControllerTest {
 
 	// ==================== POST /digitalAsset/lookup ====================
 
-	private static final String KEY_JSON =
-			"{\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\", \"origAssetName\": \"BC905.tif\"}";
+	private static final String ITEM_JSON = "{\"referenceId\": \"jcr-1\", \"fileName\": \"BC905.tif\", "
+			+ "\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\"}";
+
+	private static String lookupBody(String... items) {
+		return "{\"assets\": [" + String.join(",", items) + "]}";
+	}
+
+	private static AssetLookupResponse lookupResponse(String requestId, LookupResult... results) {
+		return new AssetLookupResponse(requestId, java.time.Instant.parse("2026-10-24T10:15:30.123Z"), "PARTIAL",
+				new AssetLookupResponse.Summary(results.length, 1, 1, 0, 0, 0), List.of(results));
+	}
+
+	private static AssetMetadataItem item() {
+		Product p = product("Running Shoe Hero");
+		p.setAssetName("BC905.tif");
+		p.setSource("External");
+		p.setSupplier("AutoComp");
+		p.setBrand("Bosch");
+		p.setAssetType("stills");
+		p.setColorSpace(ColorSpace.RGB);
+		p.setProductRegion(List.of("na", "eu"));
+		p.setProductLine(List.of("running"));
+		return AssetMetadataItem.from(p);
+	}
 
 	@Test
-	void lookupReturnsResultPerKey() throws Exception {
-		AssetLookupKey found = new AssetLookupKey("External", "AutoComp", "Bosch", "BC905.tif");
-		AssetLookupKey missing = new AssetLookupKey("External", "AutoComp", "Bosch", "nope.tif");
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList())).thenReturn(List.of(
-				new AssetLookupResult(found, true, List.of(product("Bosch"))),
-				new AssetLookupResult(missing, false, List.of())));
+	void lookupReturnsPerItemResults() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("team-x-001",
+				LookupResult.found("jcr-1", item()), LookupResult.notFound("jcr-2")));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
-				.content("[" + KEY_JSON + ", {\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\", \"origAssetName\": \"nope.tif\"}]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).header("X-Request-Id", "team-x-001")
+				.content(lookupBody(ITEM_JSON, "{\"referenceId\": \"jcr-2\", \"fileName\": \"nope.tif\", "
+						+ "\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\"}")))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.length()").value(2))
-				.andExpect(jsonPath("$[0].found").value(true))
-				.andExpect(jsonPath("$[0].key.origAssetName").value("BC905.tif"))
-				.andExpect(jsonPath("$[0].items[0].uuid").value(UUID))
-				.andExpect(jsonPath("$[1].found").value(false))
-				.andExpect(jsonPath("$[1].items.length()").value(0));
+				.andExpect(jsonPath("$.requestId").value("team-x-001"))
+				.andExpect(jsonPath("$.timestamp").value("2026-10-24T10:15:30.123Z"))
+				.andExpect(jsonPath("$.status").value("PARTIAL"))
+				.andExpect(jsonPath("$.summary.requested").value(2))
+				.andExpect(jsonPath("$.summary.found").value(1))
+				.andExpect(jsonPath("$.summary.notFound").value(1))
+				.andExpect(jsonPath("$.results[0].referenceId").value("jcr-1"))
+				.andExpect(jsonPath("$.results[0].status").value("FOUND"))
+				.andExpect(jsonPath("$.results[0].retryable").value(false))
+				.andExpect(jsonPath("$.results[0].matchCount").value(1))
+				.andExpect(jsonPath("$.results[0].asset.uuid").value(UUID))
+				.andExpect(jsonPath("$.results[0].asset.fileName").value("BC905.tif"))
+				.andExpect(jsonPath("$.results[0].asset.colorSpace").value("RGB"))
+				.andExpect(jsonPath("$.results[0].asset.productRegion[1]").value("eu"))
+				.andExpect(jsonPath("$.results[0].asset.productline[0]").value("running"))
+				.andExpect(jsonPath("$.results[0].asset.productLine").doesNotExist())
+				// null fields are left out
+				.andExpect(jsonPath("$.results[0].asset.description").doesNotExist())
+				.andExpect(jsonPath("$.results[1].referenceId").value("jcr-2"))
+				.andExpect(jsonPath("$.results[1].status").value("NOT_FOUND"))
+				.andExpect(jsonPath("$.results[1].retryable").value(true))
+				.andExpect(jsonPath("$.results[1].asset").doesNotExist())
+				.andExpect(jsonPath("$.results[1].matchCount").doesNotExist());
 
-		verify(digitalAssetMetadataService).lookupDigitalAssets(argThat(keys -> keys.size() == 2
-				&& "BC905.tif".equals(keys.get(0).getOrigAssetName()) && "nope.tif".equals(keys.get(1).getOrigAssetName())));
+		verify(assetLookupService).lookup(eq("team-x-001"), argThat(items -> items.size() == 2
+				&& "jcr-1".equals(items.get(0).getReferenceId()) && "nope.tif".equals(items.get(1).getFileName())));
 	}
 
 	@Test
-	void lookupRequiresAllFourFieldsPerKey() throws Exception {
+	void lookupSerializesDuplicateAndInvalidResults() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("r",
+				LookupResult.duplicate("jcr-1", 2),
+				LookupResult.invalid("jcr-2", java.util.Map.of("supplier", "supplier is required"))));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.results[0].status").value("DUPLICATE"))
+				.andExpect(jsonPath("$.results[0].retryable").value(true))
+				.andExpect(jsonPath("$.results[0].matchCount").value(2))
+				.andExpect(jsonPath("$.results[0].asset").doesNotExist())
+				.andExpect(jsonPath("$.results[1].status").value("INVALID"))
+				.andExpect(jsonPath("$.results[1].errors.supplier").value("supplier is required"));
+	}
+
+	@Test
+	void lookupGeneratesRequestIdWhenHeaderMissingOrInvalid() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("x"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isOk());
 		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
-				.content("[" + KEY_JSON + ", {\"source\": \" \", \"brand\": \"Bosch\"}]"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors['[1].source']").value("source is required"))
-				.andExpect(jsonPath("$.errors['[1].supplier']").value("supplier is required"))
-				.andExpect(jsonPath("$.errors['[1].origAssetName']").value("origAssetName is required"))
-				.andExpect(jsonPath("$.errors['[1].brand']").doesNotExist())
-				.andExpect(jsonPath("$.errors['[0].source']").doesNotExist());
+				.header("X-Request-Id", "<script>").content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isOk());
 
-		verify(digitalAssetMetadataService, never()).lookupDigitalAssets(anyList());
+		verify(assetLookupService, times(2)).lookup(argThat(id -> id.matches("odm-[0-9a-f-]{36}")), anyList());
 	}
 
 	@Test
-	void lookupRejectsEmptyArray() throws Exception {
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[]"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.keys").exists());
+	void lookupItemFieldErrorsDoNotFailTheBatch() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("r"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
+				.content(lookupBody(ITEM_JSON, "{\"referenceId\": \"jcr-2\", \"source\": \" \"}")))
+				.andExpect(status().isOk());
+
+		verify(assetLookupService).lookup(anyString(), argThat(items -> items.size() == 2));
 	}
 
 	@Test
-	void lookupRejectsMoreThan500Keys() throws Exception {
-		String body = "[" + String.join(",", java.util.Collections.nCopies(501, KEY_JSON)) + "]";
-
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(body))
+	void lookupRequiresReferenceIdOnEveryItem() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
+				.content(lookupBody(ITEM_JSON, "{\"fileName\": \"a.jpg\", \"source\": \"s\", \"supplier\": \"s\", \"brand\": \"b\"}")))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.keys").exists());
+				.andExpect(jsonPath("$.errors['assets[1].referenceId']").value("referenceId is required"));
 
-		verify(digitalAssetMetadataService, never()).lookupDigitalAssets(anyList());
+		verify(assetLookupService, never()).lookup(anyString(), anyList());
 	}
 
 	@Test
-	void lookupRejectsNullElement() throws Exception {
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + ", null]"))
+	void lookupDuplicateReferenceIdReturns400() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenThrow(new InvalidLookupRequestException(
+				java.util.Map.of("assets[1].referenceId", "duplicate referenceId, also at assets[0]")));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON, ITEM_JSON)))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors['[1]']").exists());
+				.andExpect(jsonPath("$.errors['assets[1].referenceId']").value("duplicate referenceId, also at assets[0]"));
 	}
 
 	@Test
-	void lookupRejectsSingleObjectBody() throws Exception {
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(KEY_JSON))
+	void lookupRejectsEmptyOrMissingAssets() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("{\"assets\": []}"))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.body").value("invalid type, expected array"));
+				.andExpect(jsonPath("$.errors.assets").value("assets must contain at least one entry"));
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("{}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").exists());
+
+		verify(assetLookupService, never()).lookup(anyString(), anyList());
 	}
 
 	@Test
-	void lookupReturns503WhenDatabaseUnavailable() throws Exception {
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList()))
+	void lookupRejectsMoreThan500Assets() throws Exception {
+		String[] items = new String[501];
+		for (int i = 0; i < items.length; i++) {
+			items[i] = ITEM_JSON.replace("jcr-1", "jcr-" + i);
+		}
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(items)))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").value("at most 500 assets per request"));
+
+		verify(assetLookupService, never()).lookup(anyString(), anyList());
+	}
+
+	@Test
+	void lookupRejectsNullEntry() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON, "null")))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[1]']").value("asset entry must not be null"));
+	}
+
+	@Test
+	void lookupRejectsBareArrayBody() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + ITEM_JSON + "]"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.body").value("invalid type, expected object"));
+	}
+
+	@Test
+	void lookupReturns503WithRetryAfterWhenDatabaseUnavailable() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList()))
 				.thenThrow(new CannotCreateTransactionException("no connection"));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + "]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
 				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"))
 				.andExpect(jsonPath("$.detail").value("Database is temporarily unavailable, please retry"));
 	}
 
 	@Test
-	void lookupReturns503OnQueryTimeout() throws Exception {
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList()))
-				.thenThrow(new QueryTimeoutException("timeout"));
+	void lookupReturns503OnQueryOrTransactionTimeout() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList()))
+				.thenThrow(new QueryTimeoutException("timeout"))
+				.thenThrow(new org.springframework.transaction.TransactionTimedOutException("10s"));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + "]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"));
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
 				.andExpect(status().isServiceUnavailable());
 	}
 
 	@Test
+	void hibernateDeadlineDuringLazyLoadReturns503() throws Exception {
+		// thrown by Hibernate itself before a statement, outside any repository call, so Spring never translates it
+		when(assetLookupService.lookup(anyString(), anyList()))
+				.thenThrow(new org.hibernate.TransactionException("Transaction timeout expired"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"));
+	}
+
+	@Test
+	void untranslatedJdbcTimeoutReturns503() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenThrow(new org.hibernate.QueryTimeoutException(
+				"timeout", new java.sql.SQLTimeoutException("Statement cancelled due to timeout"), "select 1"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isServiceUnavailable());
+	}
+
+	@Test
+	void otherUntranslatedPersistenceErrorReturns500WithoutDetails() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList()))
+				.thenThrow(new jakarta.persistence.PersistenceException("mapping problem in secret table"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isInternalServerError())
+				.andExpect(jsonPath("$.detail").value("Database error"))
+				.andExpect(header().doesNotExist("Retry-After"));
+	}
+
+	@Test
 	void otherDatabaseErrorReturns500WithoutDetails() throws Exception {
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList()))
+		when(assetLookupService.lookup(anyString(), anyList()))
 				.thenThrow(new InvalidDataAccessResourceUsageException("bad SQL: secret table"));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + "]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
 				.andExpect(status().isInternalServerError())
 				.andExpect(jsonPath("$.detail").value("Database error"));
 	}

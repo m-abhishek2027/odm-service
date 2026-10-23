@@ -1,17 +1,9 @@
 package com.odm.service.impl;
 
 import java.beans.PropertyDescriptor;
-import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.HexFormat;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.hibernate.Hibernate;
 import org.springframework.beans.BeanUtils;
@@ -22,8 +14,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.odm.dto.AssetLookupKey;
-import com.odm.dto.AssetLookupResult;
 import com.odm.dto.DigitalAssetListResponse;
 import com.odm.dto.DigitalAssetSearchCriteria;
 import com.odm.dto.ProductRequest;
@@ -125,57 +115,6 @@ public class DigitalAssetMetadataServiceImpl implements DigitalAssetMetadataServ
 		Product product = findOrThrow(uuid);
 		product.setActive(Boolean.FALSE);
 		productRepo.save(product);
-	}
-
-	@Override
-	@Transactional(readOnly = true)
-	public List<AssetLookupResult> lookupDigitalAssets(List<AssetLookupKey> keys) {
-		List<AssetLookupKey> requested = keys.stream().map(AssetLookupKey::trimmed).toList();
-		Collator collator = lookupCollator();
-		List<String> requestedMatchKeys = requested.stream().map(k -> matchKey(collator, k)).toList();
-
-		// duplicate keys in the request are queried once
-		Map<String, AssetLookupKey> distinct = new LinkedHashMap<>();
-		for (int i = 0; i < requested.size(); i++) {
-			distinct.putIfAbsent(requestedMatchKeys.get(i), requested.get(i));
-		}
-
-		List<Product> products = productRepo.findAll(
-				ProductSpecifications.activeAndMatchingAnyKey(distinct.values()), DEFAULT_SORT);
-		loadCollections(products);
-
-		Map<String, List<Product>> byKey = new HashMap<>();
-		for (Product product : products) {
-			String matchKey = matchKey(collator, AssetLookupKey.of(product).trimmed());
-			if (distinct.containsKey(matchKey)) {
-				byKey.computeIfAbsent(matchKey, k -> new ArrayList<>()).add(product);
-			} else {
-				log.warn("Lookup returned asset {} that matches no requested key; DB collation differs from lookup collator",
-						product.getUuid());
-			}
-		}
-
-		log.debug("Lookup: {} keys ({} distinct), {} assets found", requested.size(), distinct.size(), products.size());
-
-		List<AssetLookupResult> results = new ArrayList<>(requested.size());
-		for (int i = 0; i < requested.size(); i++) {
-			List<Product> items = byKey.getOrDefault(requestedMatchKeys.get(i), List.of());
-			results.add(new AssetLookupResult(requested.get(i), !items.isEmpty(), items));
-		}
-		return results;
-	}
-
-	// MySQL's default collation ignores case and accents, so results are grouped back to keys the same way
-	private static Collator lookupCollator() {
-		Collator collator = Collator.getInstance(Locale.ROOT);
-		collator.setStrength(Collator.PRIMARY);
-		return collator;
-	}
-
-	private static String matchKey(Collator collator, AssetLookupKey key) {
-		return Stream.of(key.getSource(), key.getSupplier(), key.getBrand(), key.getOrigAssetName())
-				.map(value -> HexFormat.of().formatHex(collator.getCollationKey(value == null ? "" : value).toByteArray()))
-				.collect(Collectors.joining(":"));
 	}
 
 	// open-in-view is off, so the lazy collections must be loaded while the transaction is still open;

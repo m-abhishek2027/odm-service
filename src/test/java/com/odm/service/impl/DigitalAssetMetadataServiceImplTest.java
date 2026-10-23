@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -24,8 +23,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 
-import com.odm.dto.AssetLookupKey;
-import com.odm.dto.AssetLookupResult;
 import com.odm.dto.DigitalAssetListResponse;
 import com.odm.dto.DigitalAssetSearchCriteria;
 import com.odm.dto.ProductRequest;
@@ -232,79 +229,6 @@ class DigitalAssetMetadataServiceImplTest {
 		verify(productRepo).save(product);
 		verify(productRepo, never()).delete(any(Product.class));
 		verify(productRepo, never()).deleteById(any());
-	}
-
-	private static Product asset(String uuid, String source, String supplier, String brand, String origAssetName) {
-		Product product = new Product();
-		product.setUuid(uuid);
-		product.setSource(source);
-		product.setSupplier(supplier);
-		product.setBrand(brand);
-		product.setOrigAssetName(origAssetName);
-		product.setActive(true);
-		return product;
-	}
-
-	@Test
-	@SuppressWarnings("unchecked")
-	void lookupRunsOneQueryAndReturnsResultPerKeyInOrder() {
-		Product bc905 = asset("a", "External", "AutoComp", "Bosch", "BC905.tif");
-		Product bc905Copy = asset("b", "External", "AutoComp", "Bosch", "BC905.tif");
-		Product other = asset("c", "Internal", "AutoComp", "Bosch", "X1.tif");
-		when(productRepo.findAll(any(Specification.class), any(Sort.class))).thenReturn(List.of(bc905, bc905Copy, other));
-
-		List<AssetLookupResult> results = service.lookupDigitalAssets(List.of(
-				new AssetLookupKey("Internal", "AutoComp", "Bosch", "X1.tif"),
-				new AssetLookupKey("External", "AutoComp", "Bosch", "missing.tif"),
-				new AssetLookupKey("External", "AutoComp", "Bosch", "BC905.tif")));
-
-		verify(productRepo, times(1)).findAll(any(Specification.class), any(Sort.class));
-		assertThat(results).hasSize(3);
-		assertThat(results.get(0).found()).isTrue();
-		assertThat(results.get(0).items()).containsExactly(other);
-		assertThat(results.get(1).found()).isFalse();
-		assertThat(results.get(1).items()).isEmpty();
-		assertThat(results.get(1).key().getOrigAssetName()).isEqualTo("missing.tif");
-		assertThat(results.get(2).items()).containsExactly(bc905, bc905Copy);
-	}
-
-	@Test
-	@SuppressWarnings("unchecked")
-	void lookupMatchesIgnoringCaseAccentsAndSurroundingSpaces() {
-		Product stored = asset("a", "External", "AutoComp", "Bosch", "Café.tif");
-		when(productRepo.findAll(any(Specification.class), any(Sort.class))).thenReturn(List.of(stored));
-
-		List<AssetLookupResult> results = service.lookupDigitalAssets(List.of(
-				new AssetLookupKey("  external ", "AUTOCOMP", "bosch", "cafe.TIF")));
-
-		assertThat(results.get(0).found()).isTrue();
-		assertThat(results.get(0).items()).containsExactly(stored);
-		assertThat(results.get(0).key().getSource()).isEqualTo("external");
-	}
-
-	@Test
-	@SuppressWarnings("unchecked")
-	void lookupAnswersDuplicateKeysEachTime() {
-		Product stored = asset("a", "External", "AutoComp", "Bosch", "BC905.tif");
-		when(productRepo.findAll(any(Specification.class), any(Sort.class))).thenReturn(List.of(stored));
-		AssetLookupKey key = new AssetLookupKey("External", "AutoComp", "Bosch", "BC905.tif");
-
-		List<AssetLookupResult> results = service.lookupDigitalAssets(List.of(key, key));
-
-		assertThat(results).hasSize(2).allSatisfy(r -> assertThat(r.items()).containsExactly(stored));
-	}
-
-	@Test
-	@SuppressWarnings("unchecked")
-	void lookupDoesNotConfuseFieldBoundaries() {
-		// "ab"+"c" must not match "a"+"bc"
-		Product stored = asset("a", "ab", "c", "Bosch", "x.tif");
-		when(productRepo.findAll(any(Specification.class), any(Sort.class))).thenReturn(List.of(stored));
-
-		List<AssetLookupResult> results = service.lookupDigitalAssets(List.of(
-				new AssetLookupKey("a", "bc", "Bosch", "x.tif")));
-
-		assertThat(results.get(0).found()).isFalse();
 	}
 
 	@Test

@@ -18,6 +18,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.UUID;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.odm.lookup.LookupKey;
 
 import org.hibernate.annotations.ColumnDefault;
 import org.springframework.data.annotation.CreatedBy;
@@ -46,6 +50,17 @@ public class Product {
 	    if (active == null) {
 	        active = Boolean.TRUE;
 	    }
+	    refreshLookupKeyHash();
+	}
+
+	@PreUpdate
+	public void preUpdate() {
+	    refreshLookupKeyHash();
+	}
+
+	// keeps lookup_key_hash in step with the four key fields on every JPA insert and update
+	private void refreshLookupKeyHash() {
+	    lookupKeyHash = LookupKey.hashOf(source, supplier, brand, assetName);
 	}
 
 	@Column(name = "title")
@@ -207,6 +222,18 @@ public class Product {
 
 	@Column(name = "asset_name")
 	private String assetName;
+
+	// ==================== Lookup Fields ====================
+
+	// SHA-256 of the normalized (source, supplier, brand, assetName); see LookupKey
+	@JsonIgnore
+	@Column(name = "lookup_key_hash", length = 64)
+	private String lookupKeyHash;
+
+	// MD5 reported by Cloud Storage (base64); tells identical copies from different files in lookup
+	@JsonIgnore
+	@Column(name = "content_md5", length = 32)
+	private String contentMd5;
 
 	@Column(name = "asset_url", length = 2048)
 	private String assetUrl;
