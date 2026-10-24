@@ -15,8 +15,6 @@ public interface DigitalAssetMetadataService {
 
 	Product getDigitalAsset(String uuid);
 
-	Product updateDigitalAsset(String uuid, ProductRequest request);
-
 	void deleteDigitalAsset(String uuid);
 
 }

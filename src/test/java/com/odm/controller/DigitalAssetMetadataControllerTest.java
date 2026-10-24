@@ -36,13 +36,17 @@ import org.springframework.transaction.CannotCreateTransactionException;
 import com.odm.dto.AssetLookupResponse;
 import com.odm.dto.AssetMetadataItem;
 import com.odm.dto.LookupResult;
+import com.odm.dto.MetadataUpdateResponse;
+import com.odm.dto.MetadataUpdateResult;
 import com.odm.dto.DigitalAssetListResponse;
 import com.odm.dto.ProductRequest;
 import com.odm.entity.ColorSpace;
 import com.odm.entity.Product;
 import com.odm.exception.InvalidLookupRequestException;
+import com.odm.exception.InvalidUpdateRequestException;
 import com.odm.exception.ResourceNotFoundException;
 import com.odm.service.AssetLookupService;
+import com.odm.service.AssetMetadataUpdateService;
 import com.odm.service.DigitalAssetMetadataService;
 
 @WebMvcTest(DigitalAssetMetadataController.class)
@@ -59,6 +63,9 @@ class DigitalAssetMetadataControllerTest {
 
 	@MockitoBean
 	private AssetLookupService assetLookupService;
+
+	@MockitoBean
+	private AssetMetadataUpdateService metadataUpdateService;
 
 	private static Product product(String title) {
 		Product product = new Product();
@@ -510,53 +517,6 @@ class DigitalAssetMetadataControllerTest {
 				.andExpect(jsonPath("$.detail").value("digitalAsset not found: nope"));
 	}
 
-	// ==================== PUT /digitalAsset/{uuid} ====================
-
-	@Test
-	void updateDigitalAssetReturnsUpdatedObject() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class)))
-				.thenReturn(product("Updated"));
-
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
-				.content("{\"title\": \"Updated\"}"))
-				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.title").value("Updated"));
-	}
-
-	@Test
-	void updateDigitalAssetValidatesBody() throws Exception {
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"dpi\": -1}"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.dpi").exists())
-				.andExpect(jsonPath("$.errors.source").doesNotExist())
-				.andExpect(jsonPath("$.errors.supplier").doesNotExist())
-				.andExpect(jsonPath("$.errors.brand").doesNotExist())
-				.andExpect(jsonPath("$.errors.assetName").doesNotExist());
-	}
-
-	@Test
-	void updateDigitalAssetAcceptsColorSpaceEnum() throws Exception {
-		Product updated = product("Bosch");
-		updated.setColorSpace(ColorSpace.CMY);
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class))).thenReturn(updated);
-
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"colorSpace\": \"CMY\"}"))
-				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.colorSpace").value("CMY"));
-
-		verify(digitalAssetMetadataService).updateDigitalAsset(eq(UUID), argThat(r -> r.getColorSpace() == ColorSpace.CMY));
-	}
-
-	@Test
-	void updateDigitalAssetRejectsUnknownColorSpace() throws Exception {
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"colorSpace\": \"sRGB\"}"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.colorSpace")
-						.value("invalid value 'sRGB', allowed values: RGB, CMY, BIT, GRA, VEC, OTH, WEB"));
-
-		verify(digitalAssetMetadataService, never()).updateDigitalAsset(any(), any());
-	}
-
 	@Test
 	void addDigitalAssetsReportsUnknownColorSpaceByIndex() throws Exception {
 		mockMvc.perform(post(BASE).contentType(MediaType.APPLICATION_JSON)
@@ -570,49 +530,210 @@ class DigitalAssetMetadataControllerTest {
 		verify(digitalAssetMetadataService, never()).addDigitalAssets(anyList());
 	}
 
-	@Test
-	void updateUsesPathUuidAndIgnoresUuidInBody() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class)))
-				.thenReturn(product("Bosch"));
+	// ==================== PUT /digitalAsset/{uuid} (AEM metadata) ====================
 
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
-				.content("{\"uuid\": \"hacked-uuid\", \"createdBy\": \"x\", \"createdOn\": \"2000-01-01T00:00:00\", \"rights\": \"Licensed\"}"))
+	private static final String METADATA_JSON =
+			"{\"metadataModifiedAt\": \"2026-10-25T10:15:30.123Z\", \"dpi\": 300, \"colorSpace\": \"RGB\", \"okThumb\": true}";
+
+	private static MetadataUpdateResponse updateResponse(MetadataUpdateResult... results) {
+		return new MetadataUpdateResponse("r", java.time.Instant.parse("2026-10-25T10:16:00Z"), "SUCCESS",
+				new MetadataUpdateResponse.Summary(results.length, 1, 0, 0, 0, 0, 0), List.of(results));
+	}
+
+	@Test
+	void putMetadataReturns200WithChangedFields() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.updated(UUID, List.of("dpi", "colorSpace"))));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).header("X-Request-Id", "aem-1")
+				.content(METADATA_JSON))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.uuid").value(UUID));
+				.andExpect(jsonPath("$.uuid").value(UUID))
+				.andExpect(jsonPath("$.status").value("UPDATED"))
+				.andExpect(jsonPath("$.changedFields[1]").value("colorSpace"))
+				.andExpect(jsonPath("$.errors").doesNotExist());
 
-		verify(digitalAssetMetadataService).updateDigitalAsset(eq(UUID), argThat(r -> "Licensed".equals(r.getRights())));
-		verify(digitalAssetMetadataService, never()).updateDigitalAsset(eq("hacked-uuid"), any());
+		verify(metadataUpdateService).update(eq("aem-1"), argThat(items -> items.size() == 1
+				&& UUID.equals(items.get(0).getUuid()) && items.get(0).getDpi() == 300.0
+				&& items.get(0).getColorSpace() == ColorSpace.RGB
+				&& items.get(0).getMetadataModifiedAt().equals(java.time.Instant.parse("2026-10-25T10:15:30.123Z"))));
 	}
 
 	@Test
-	void updateDigitalAssetAllowsBlankTitle() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class)))
-				.thenReturn(product("Bosch"));
+	void putMetadataUnchangedIs200() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.unchanged(UUID)));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.status").value("UNCHANGED"));
+	}
+
+	@Test
+	void putMetadataMapsEveryOtherOutcomeToAProblem() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.invalid(UUID, java.util.Map.of("dpi", "must be greater than or equal to 0"))))
+				.thenReturn(updateResponse(MetadataUpdateResult.notFound(UUID)))
+				.thenReturn(updateResponse(MetadataUpdateResult.deleted(UUID)))
+				.thenReturn(updateResponse(MetadataUpdateResult.stale(UUID, java.time.Instant.parse("2026-10-25T11:00:00Z"))));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.updateStatus").value("INVALID"))
+				.andExpect(jsonPath("$.errors.dpi").exists());
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.updateStatus").value("NOT_FOUND"));
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.updateStatus").value("DELETED"));
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.updateStatus").value("STALE"))
+				.andExpect(jsonPath("$.storedMetadataModifiedAt").value("2026-10-25T11:00:00Z"));
+	}
+
+	@Test
+	void putMetadataRejectsBodyUuidThatDiffersFromPath() throws Exception {
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
+				.content("{\"uuid\": \"other-uuid\", \"metadataModifiedAt\": \"2026-10-25T10:15:30Z\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.uuid").value("must match the uuid in the path"));
+
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
+	}
+
+	@Test
+	void putMetadataPassesUnknownFieldsToTheServiceForRejection() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.invalid(UUID, java.util.Map.of("title", "not an updatable metadata field"))));
 
 		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
-				.content("{\"title\": \"\", \"mfg\": null, \"assetName\": \"x.jpg\"}"))
-				.andExpect(status().isOk());
+				.content("{\"metadataModifiedAt\": \"2026-10-25T10:15:30Z\", \"title\": \"x\", \"source\": \"y\"}"))
+				.andExpect(status().isBadRequest());
 
-		verify(digitalAssetMetadataService).updateDigitalAsset(eq(UUID), argThat(r -> "x.jpg".equals(r.getAssetName())));
+		verify(metadataUpdateService).update(anyString(), argThat(items ->
+				items.get(0).getUnknownFields().keySet().equals(java.util.Set.of("title", "source"))));
 	}
 
 	@Test
-	void updateDigitalAssetReturns404WhenMissing() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq("nope"), any()))
-				.thenThrow(new ResourceNotFoundException("digitalAsset not found: nope"));
+	void putMetadataRejectsWrongTypes() throws Exception {
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
+				.content("{\"metadataModifiedAt\": \"yesterday\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.metadataModifiedAt").exists());
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
+				.content("{\"metadataModifiedAt\": \"2026-10-25T10:15:30Z\", \"colorSpace\": \"sRGB\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.colorSpace").exists());
 
-		mockMvc.perform(put(BASE + "/nope").contentType(MediaType.APPLICATION_JSON).content("{\"title\": \"x\"}"))
-				.andExpect(status().isNotFound());
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
 	}
 
 	@Test
 	void unexpectedErrorReturns500() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any()))
-				.thenThrow(new IllegalStateException("db down"));
+		when(metadataUpdateService.update(anyString(), anyList())).thenThrow(new IllegalStateException("boom"));
 
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"title\": \"x\"}"))
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
 				.andExpect(status().isInternalServerError())
 				.andExpect(jsonPath("$.detail").value("Internal server error"));
+	}
+
+	@Test
+	void updateReturns503WithRetryAfterWhenDatabaseUnavailable() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenThrow(new CannotCreateTransactionException("no connection"));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"));
+	}
+
+	// ==================== POST /digitalAsset/metadata/batch ====================
+
+	private static String batchBody(String... items) {
+		return "{\"assets\": [" + String.join(",", items) + "]}";
+	}
+
+	private static String batchItem(String uuid) {
+		return "{\"uuid\": \"" + uuid + "\", \"metadataModifiedAt\": \"2026-10-25T10:15:30Z\", \"dpi\": 72}";
+	}
+
+	@Test
+	void batchReturnsPerItemResults() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList())).thenReturn(new MetadataUpdateResponse("b-1",
+				java.time.Instant.parse("2026-10-25T10:16:00Z"), "PARTIAL",
+				new MetadataUpdateResponse.Summary(2, 1, 0, 0, 0, 1, 0), List.of(
+						MetadataUpdateResult.updated("u1", List.of("dpi")),
+						MetadataUpdateResult.stale("u2", java.time.Instant.parse("2026-10-25T11:00:00Z")))));
+
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).header("X-Request-Id", "b-1")
+				.content(batchBody(batchItem("u1"), batchItem("u2"))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.requestId").value("b-1"))
+				.andExpect(jsonPath("$.status").value("PARTIAL"))
+				.andExpect(jsonPath("$.summary.updated").value(1))
+				.andExpect(jsonPath("$.summary.stale").value(1))
+				.andExpect(jsonPath("$.results[0].status").value("UPDATED"))
+				.andExpect(jsonPath("$.results[0].changedFields[0]").value("dpi"))
+				.andExpect(jsonPath("$.results[1].status").value("STALE"))
+				.andExpect(jsonPath("$.results[1].storedMetadataModifiedAt").value("2026-10-25T11:00:00Z"))
+				.andExpect(jsonPath("$.results[1].changedFields").doesNotExist());
+
+		verify(metadataUpdateService).update(eq("b-1"), argThat(items -> items.size() == 2
+				&& "u1".equals(items.get(0).getUuid()) && "u2".equals(items.get(1).getUuid())));
+	}
+
+	@Test
+	void batchRejectsEmptyMissingTooLargeAndNullEntries() throws Exception {
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content("{\"assets\": []}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").value("assets must contain at least one entry"));
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content("{}"))
+				.andExpect(status().isBadRequest());
+		String[] many = new String[501];
+		for (int i = 0; i < many.length; i++) {
+			many[i] = batchItem("u" + i);
+		}
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content(batchBody(many)))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").value("at most 500 assets per request"));
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON)
+				.content(batchBody(batchItem("u1"), "null")))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[1]']").value("asset entry must not be null"));
+
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
+	}
+
+	@Test
+	void batchRejectsOverlongUuid() throws Exception {
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON)
+				.content(batchBody(batchItem("x".repeat(37)))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[0].uuid']").exists());
+	}
+
+	@Test
+	void batchMissingOrDuplicateUuidReturns400() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList())).thenThrow(new InvalidUpdateRequestException(
+				java.util.Map.of("assets[1].uuid", "duplicate uuid, also at assets[0]")));
+
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON)
+				.content(batchBody(batchItem("u1"), batchItem("u1"))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[1].uuid']").value("duplicate uuid, also at assets[0]"));
+	}
+
+	@Test
+	void oversizedBodyReturns413BeforeParsing() throws Exception {
+		String huge = "{\"assets\": [\"" + "x".repeat(2_100_000) + "\"]}";
+
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content(huge))
+				.andExpect(status().isPayloadTooLarge())
+				.andExpect(jsonPath("$.status").value(413));
+
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
 	}
 
 	// ==================== DELETE /digitalAsset/{uuid} ====================

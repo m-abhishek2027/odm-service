@@ -1,14 +1,11 @@
 package com.odm.service.impl;
 
-import java.beans.PropertyDescriptor;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
 import org.hibernate.Hibernate;
 import org.springframework.beans.BeanUtils;
-import org.springframework.beans.BeanWrapper;
-import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -63,50 +60,6 @@ public class DigitalAssetMetadataServiceImpl implements DigitalAssetMetadataServ
 		Product product = findOrThrow(uuid);
 		loadCollections(List.of(product));
 		return product;
-	}
-
-	@Override
-	@Transactional
-	public Product updateDigitalAsset(String uuid, ProductRequest request) {
-		Product product = findOrThrow(uuid);
-		copyNonEmptyProperties(request, product);
-		Product saved = productRepo.saveAndFlush(product);
-		loadCollections(List.of(saved));
-		return saved;
-	}
-
-	// copies only fields that carry a value: null, blank strings and empty lists keep what is stored.
-	// Blank entries inside a list are dropped; a list with nothing left keeps what is stored.
-	// uuid and audit fields are not part of ProductRequest, so an update can never change them.
-	private static void copyNonEmptyProperties(ProductRequest source, Product target) {
-		BeanWrapper src = new BeanWrapperImpl(source);
-		BeanWrapper dest = new BeanWrapperImpl(target);
-		for (PropertyDescriptor pd : src.getPropertyDescriptors()) {
-			String name = pd.getName();
-			if (!src.isReadableProperty(name) || !dest.isWritableProperty(name)) {
-				continue;
-			}
-			Object value = src.getPropertyValue(name);
-			if (value instanceof Collection<?> collection) {
-				value = withoutBlankEntries(collection);
-			}
-			if (value == null
-					|| (value instanceof String s && s.isBlank())
-					|| (value instanceof Collection<?> c && c.isEmpty())) {
-				continue;
-			}
-			dest.setPropertyValue(name, value);
-		}
-	}
-
-	private static List<Object> withoutBlankEntries(Collection<?> values) {
-		List<Object> kept = new ArrayList<>(values.size());
-		for (Object value : values) {
-			if (value != null && !(value instanceof String s && s.isBlank())) {
-				kept.add(value);
-			}
-		}
-		return kept;
 	}
 
 	@Override

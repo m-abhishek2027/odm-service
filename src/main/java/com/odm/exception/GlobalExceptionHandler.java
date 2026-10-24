@@ -36,6 +36,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.hibernate.TransactionException;
 
 import com.google.cloud.storage.StorageException;
+import com.odm.config.RequestSizeLimitFilter;
 
 import jakarta.persistence.LockTimeoutException;
 import jakarta.persistence.PersistenceException;
@@ -88,6 +89,10 @@ public class GlobalExceptionHandler {
 
 	@ExceptionHandler(HttpMessageNotReadableException.class)
 	public ProblemDetail handleUnreadable(HttpMessageNotReadableException ex) {
+		// a body without Content-Length cut off by RequestSizeLimitFilter while it was read
+		if (causedBy(ex, RequestSizeLimitFilter.PayloadTooLargeException.class)) {
+			return ProblemDetail.forStatusAndDetail(HttpStatus.PAYLOAD_TOO_LARGE, "Request body is too large");
+		}
 		// unknown enum value, e.g. colorSpace "sRGB": report the field and the allowed values
 		if (ex.getCause() instanceof InvalidFormatException ife && ife.getTargetType() != null
 				&& ife.getTargetType().isEnum()) {
@@ -176,6 +181,11 @@ public class GlobalExceptionHandler {
 		log.error("Response could not be written", ex);
 		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 				.body(ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error"));
+	}
+
+	@ExceptionHandler(InvalidUpdateRequestException.class)
+	public ProblemDetail handleInvalidUpdateRequest(InvalidUpdateRequestException ex) {
+		return validationProblem(new LinkedHashMap<>(ex.getErrors()));
 	}
 
 	@ExceptionHandler(InvalidLookupRequestException.class)

@@ -1,11 +1,13 @@
 package com.odm.controller;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,10 +23,16 @@ import com.odm.dto.AssetLookupRequest;
 import com.odm.dto.AssetLookupResponse;
 import com.odm.dto.DigitalAssetListResponse;
 import com.odm.dto.DigitalAssetSearchCriteria;
+import com.odm.dto.MetadataBatchUpdateRequest;
+import com.odm.dto.MetadataUpdate;
+import com.odm.dto.MetadataUpdateResponse;
+import com.odm.dto.MetadataUpdateResult;
+import com.odm.dto.MetadataUpdateStatus;
 import com.odm.dto.OnCreate;
 import com.odm.dto.ProductRequest;
 import com.odm.entity.Product;
 import com.odm.service.AssetLookupService;
+import com.odm.service.AssetMetadataUpdateService;
 import com.odm.service.DigitalAssetMetadataService;
 
 import jakarta.validation.Valid;
@@ -47,6 +55,8 @@ public class DigitalAssetMetadataController {
 	private final DigitalAssetMetadataService digitalAssetMetadataService;
 
 	private final AssetLookupService assetLookupService;
+
+	private final AssetMetadataUpdateService metadataUpdateService;
 
 	@GetMapping
 	public ResponseEntity<DigitalAssetListResponse> getDigitalAssets(@Valid DigitalAssetSearchCriteria criteria){
@@ -82,11 +92,46 @@ public class DigitalAssetMetadataController {
 		return ResponseEntity.ok(digitalAssetMetadataService.getDigitalAsset(uuid));
 	}
 
-	// partial update: null, blank and empty-list fields in the body are ignored
+	// AEM metadata for one asset: only the 25 metadata fields, applied when metadataModifiedAt is newer than the
+	// stored one; missing or blank fields keep their value. 200 for UPDATED / UNCHANGED, otherwise a problem detail.
 	@PutMapping(value = "/{uuid}", consumes = MediaType.APPLICATION_JSON_VALUE)
-	public ResponseEntity<Product> updateDigitalAsset(@PathVariable String uuid,
-			@Valid @RequestBody ProductRequest request){
-		return ResponseEntity.ok(digitalAssetMetadataService.updateDigitalAsset(uuid, request));
+	public ResponseEntity<Object> updateMetadata(
+			@RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
+			@PathVariable String uuid, @Valid @RequestBody MetadataUpdate update){
+		if (update.getUuid() != null && !update.getUuid().equals(uuid)) {
+			return problem(HttpStatus.BAD_REQUEST, "Validation failed", null,
+					Map.of("errors", Map.of("uuid", "must match the uuid in the path")));
+		}
+		update.setUuid(uuid);
+		MetadataUpdateResult result = metadataUpdateService.update(resolveRequestId(requestId), List.of(update))
+				.results().get(0);
+		return switch (result.status()) {
+			case UPDATED, UNCHANGED -> ResponseEntity.ok(result);
+			case INVALID -> problem(HttpStatus.BAD_REQUEST, "Validation failed", result.status(),
+					Map.of("errors", result.errors()));
+			case NOT_FOUND -> problem(HttpStatus.NOT_FOUND, "digitalAsset not found: " + uuid, result.status(), Map.of());
+			case DELETED -> problem(HttpStatus.CONFLICT, "digitalAsset is deleted: " + uuid, result.status(), Map.of());
+			case STALE -> problem(HttpStatus.CONFLICT, "Newer metadata is already stored", result.status(),
+					Map.of("storedMetadataModifiedAt", result.storedMetadataModifiedAt()));
+		};
+	}
+
+	// AEM scheduler: metadata for up to 500 assets, one result per item in request order
+	@PostMapping(value = "/metadata/batch", consumes = MediaType.APPLICATION_JSON_VALUE)
+	public ResponseEntity<MetadataUpdateResponse> updateMetadataBatch(
+			@RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
+			@Valid @RequestBody MetadataBatchUpdateRequest request){
+		return ResponseEntity.ok(metadataUpdateService.update(resolveRequestId(requestId), request.getAssets()));
+	}
+
+	private static ResponseEntity<Object> problem(HttpStatus status, String detail, MetadataUpdateStatus updateStatus,
+			Map<String, Object> properties) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
+		if (updateStatus != null) {
+			problem.setProperty("updateStatus", updateStatus);
+		}
+		properties.forEach(problem::setProperty);
+		return ResponseEntity.status(status).body(problem);
 	}
 
 	// soft delete: sets active = false

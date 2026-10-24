@@ -11,7 +11,11 @@
     },
     {
       "key": "uuid",
-      "value": "1fa365d8-3dd4-42ef-a463-5993aed9479a"
+      "value": "88d8e4df-dd4d-4e04-9ab6-f7aab30ba9fb"
+    },
+    {
+      "key": "uuid2",
+      "value": "a4818b1d-0798-4102-8c7f-0b0aa797418b"
     }
   ],
   "item": [
@@ -234,7 +238,7 @@
           }
         },
         {
-          "name": "Update by UUID (blank fields are ignored)",
+          "name": "Update AEM metadata by UUID (PUT, 25 fields)",
           "request": {
             "method": "PUT",
             "header": [
@@ -243,14 +247,43 @@
                 "value": "application/json"
               },
               {
+                "key": "X-Request-Id",
+                "value": "postman-update-001"
+              },
+              {
                 "key": "X-User-Id",
-                "value": "aem"
+                "value": "aem-sync"
               }
             ],
             "url": "{{baseUrl}}/api/v1/digitalAsset/{{uuid}}",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"origFileType\": \"TIFF\",\n  \"adjFileType\": \"JPEG\",\n  \"fileSource\": \"External\",\n  \"origPixelSizeWidth\": 4000,\n  \"origPixelSizeHeight\": 3000,\n  \"adjPixelSizeWidth\": 2000,\n  \"adjPixelSizeHeight\": 1500,\n  \"dpi\": 300,\n  \"fileSizeInKB\": 845.6,\n  \"isLayered\": false,\n  \"hasWatermark\": false,\n  \"okThumb\": true,\n  \"okSmall\": true,\n  \"okMedium\": true,\n  \"okLarge\": true,\n  \"okExtraLarge\": false,\n  \"okWhitespace\": true,\n  \"okLightDark\": true,\n  \"colorSpace\": \"RGB\",\n  \"dateProcessed\": \"2026-10-23T10:30:00\",\n  \"title\": \"\",\n  \"description\": null\n}"
+              "raw": "{\n  \"metadataModifiedAt\": \"{{$isoTimestamp}}\",\n  \"origAssetName\": \"BC905_front_original.tif\",\n  \"adjAssetName\": \"BC905_front.jpg\",\n  \"origFileType\": \"TIFF\",\n  \"adjFileType\": \"JPEG\",\n  \"assetType\": \"stills\",\n  \"fileSource\": \"External\",\n  \"origPixelSizeWidth\": 4000,\n  \"origPixelSizeHeight\": 3000,\n  \"croppedPixelSizeWidth\": 3600,\n  \"croppedPixelSizeHeight\": 2700,\n  \"adjPixelSizeWidth\": 2000,\n  \"adjPixelSizeHeight\": 1500,\n  \"dpi\": 300,\n  \"fileSizeInKB\": 845.6,\n  \"isLayered\": false,\n  \"hasWatermark\": false,\n  \"okThumb\": true,\n  \"okSmall\": true,\n  \"okMedium\": true,\n  \"okLarge\": true,\n  \"okExtraLarge\": false,\n  \"okWhitespace\": true,\n  \"okLightDark\": true,\n  \"dateProcessed\": \"2026-10-25T10:00:00\",\n  \"colorSpace\": \"RGB\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update AEM metadata - batch (scheduler)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-update-batch-001"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "aem-sync"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/digitalAsset/metadata/batch",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assets\": [\n    {\n      \"metadataModifiedAt\": \"{{$isoTimestamp}}\",\n      \"origAssetName\": \"BC905_front_original.tif\",\n      \"adjAssetName\": \"BC905_front.jpg\",\n      \"origFileType\": \"TIFF\",\n      \"adjFileType\": \"JPEG\",\n      \"assetType\": \"stills\",\n      \"fileSource\": \"External\",\n      \"origPixelSizeWidth\": 4000,\n      \"origPixelSizeHeight\": 3000,\n      \"croppedPixelSizeWidth\": 3600,\n      \"croppedPixelSizeHeight\": 2700,\n      \"adjPixelSizeWidth\": 2000,\n      \"adjPixelSizeHeight\": 1500,\n      \"dpi\": 300,\n      \"fileSizeInKB\": 845.6,\n      \"isLayered\": false,\n      \"hasWatermark\": false,\n      \"okThumb\": true,\n      \"okSmall\": true,\n      \"okMedium\": true,\n      \"okLarge\": true,\n      \"okExtraLarge\": false,\n      \"okWhitespace\": true,\n      \"okLightDark\": true,\n      \"dateProcessed\": \"2026-10-25T10:00:00\",\n      \"colorSpace\": \"RGB\",\n      \"uuid\": \"{{uuid}}\"\n    },\n    {\n      \"uuid\": \"{{uuid2}}\",\n      \"metadataModifiedAt\": \"{{$isoTimestamp}}\",\n      \"dpi\": 72,\n      \"okThumb\": false\n    }\n  ]\n}"
             }
           }
         },

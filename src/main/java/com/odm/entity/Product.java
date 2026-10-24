@@ -218,6 +218,10 @@ public class Product {
 	@Column(name = "date_processed")
 	private LocalDateTime dateProcessed;
 
+	// UTC time AEM generated the metadata last applied; an update older than this is rejected as STALE
+	@Column(name = "metadata_modified_at")
+	private LocalDateTime metadataModifiedAt;
+
 	// ==================== Digital Asset Fields ====================
 
 	@Column(name = "asset_name")
