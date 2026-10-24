@@ -1,9 +1,11 @@
 package com.odm.exception;
 
+import java.sql.SQLTransientException;
 import java.time.temporal.Temporal;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -12,10 +14,14 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.TransientDataAccessException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.transaction.TransactionTimedOutException;
 import org.springframework.validation.FieldError;
 import org.springframework.validation.method.ParameterErrors;
 import org.springframework.validation.method.ParameterValidationResult;
@@ -23,10 +29,18 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
+import org.hibernate.TransactionException;
+
 import com.google.cloud.storage.StorageException;
+import com.odm.config.RequestSizeLimitFilter;
+
+import jakarta.persistence.LockTimeoutException;
+import jakarta.persistence.PersistenceException;
+import jakarta.persistence.QueryTimeoutException;
 
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.core.JacksonException;
@@ -36,6 +50,8 @@ import tools.jackson.databind.exc.MismatchedInputException;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+	static final String RETRY_AFTER_SECONDS = "5";
 
 	@ExceptionHandler(MethodArgumentNotValidException.class)
 	public ProblemDetail handleValidation(MethodArgumentNotValidException ex) {
@@ -73,6 +89,10 @@ public class GlobalExceptionHandler {
 
 	@ExceptionHandler(HttpMessageNotReadableException.class)
 	public ProblemDetail handleUnreadable(HttpMessageNotReadableException ex) {
+		// a body without Content-Length cut off by RequestSizeLimitFilter while it was read
+		if (causedBy(ex, RequestSizeLimitFilter.PayloadTooLargeException.class)) {
+			return ProblemDetail.forStatusAndDetail(HttpStatus.PAYLOAD_TOO_LARGE, "Request body is too large");
+		}
 		// unknown enum value, e.g. colorSpace "sRGB": report the field and the allowed values
 		if (ex.getCause() instanceof InvalidFormatException ife && ife.getTargetType() != null
 				&& ife.getTargetType().isEnum()) {
@@ -122,13 +142,55 @@ public class GlobalExceptionHandler {
 		return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Request conflicts with existing data");
 	}
 
-	// database unreachable, connection pool exhausted or query timed out: the client may retry
+	// database unreachable, connection pool exhausted or query/transaction timed out: the client may retry
 	@ExceptionHandler({ DataAccessResourceFailureException.class, TransientDataAccessException.class,
-			CannotCreateTransactionException.class })
-	public ProblemDetail handleDatabaseUnavailable(Exception ex) {
+			CannotCreateTransactionException.class, TransactionTimedOutException.class })
+	public ResponseEntity<ProblemDetail> handleDatabaseUnavailable(Exception ex) {
 		log.error("Database unavailable", ex);
-		return ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
-				"Database is temporarily unavailable, please retry");
+		return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+				.header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS)
+				.body(ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+						"Database is temporarily unavailable, please retry"));
+	}
+
+	// JPA/Hibernate errors raised outside repository calls (lazy collection loads, Hibernate's own deadline check
+	// before each statement) are not translated by Spring; classify them the same way
+	@ExceptionHandler(PersistenceException.class)
+	public ResponseEntity<ProblemDetail> handlePersistence(PersistenceException ex) {
+		if (isTransient(ex)) {
+			return handleDatabaseUnavailable(ex);
+		}
+		log.error("Database error", ex);
+		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+				.body(ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Database error"));
+	}
+
+	// the client went away before the response was written: nothing to answer, not a server fault
+	@ExceptionHandler(AsyncRequestNotUsableException.class)
+	public void handleClientGone(AsyncRequestNotUsableException ex) {
+		log.debug("Client disconnected before the response was written: {}", ex.getMessage());
+	}
+
+	// a write failure is usually that same disconnect, wrapped by the JSON converter
+	@ExceptionHandler(HttpMessageNotWritableException.class)
+	public ResponseEntity<ProblemDetail> handleNotWritable(HttpMessageNotWritableException ex) {
+		if (causedBy(ex, AsyncRequestNotUsableException.class)) {
+			log.debug("Client disconnected before the response was written: {}", ex.getMessage());
+			return null;
+		}
+		log.error("Response could not be written", ex);
+		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+				.body(ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error"));
+	}
+
+	@ExceptionHandler(InvalidUpdateRequestException.class)
+	public ProblemDetail handleInvalidUpdateRequest(InvalidUpdateRequestException ex) {
+		return validationProblem(new LinkedHashMap<>(ex.getErrors()));
+	}
+
+	@ExceptionHandler(InvalidLookupRequestException.class)
+	public ProblemDetail handleInvalidLookupRequest(InvalidLookupRequestException ex) {
+		return validationProblem(new LinkedHashMap<>(ex.getErrors()));
 	}
 
 	@ExceptionHandler(DataAccessException.class)
@@ -145,6 +207,30 @@ public class GlobalExceptionHandler {
 		}
 		log.error("Unhandled error", ex);
 		return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error");
+	}
+
+	static boolean causedBy(Throwable ex, Class<? extends Throwable> type) {
+		for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+			if (type.isInstance(t)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// a timeout, a lost connection or Hibernate's transaction deadline: retrying may succeed
+	static boolean isTransient(Throwable ex) {
+		for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+			if (t instanceof SQLTransientException || t instanceof QueryTimeoutException
+					|| t instanceof LockTimeoutException) {
+				return true;
+			}
+			if (t instanceof TransactionException && t.getMessage() != null
+					&& t.getMessage().toLowerCase(Locale.ROOT).contains("timeout")) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// same key style as validation errors: "colorSpace" or "[1].colorSpace"

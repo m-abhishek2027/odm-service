@@ -23,6 +23,7 @@ import com.google.cloud.storage.Storage;
 import com.odm.dto.ImportReport;
 import com.odm.entity.Product;
 import com.odm.exception.ImportInProgressException;
+import com.odm.lookup.LookupKey;
 import com.odm.repo.ProductRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,8 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Creates one asset per object found under a bucket prefix. Only fields derivable from the path are set
  * (source, supplier, brand, assetType, file name, title, url); the scorecard fields are left to AEM.
- * Objects whose gs:// url is already stored are skipped, so the import can be re-run safely.
+ * Objects whose gs:// url is already stored are skipped, so the import can be re-run safely; for those, a missing
+ * content MD5 is filled in from the bucket (lookup uses it to tell identical copies from different files).
  * Rows are written with plain JDBC batches (one multi-row INSERT per batch with rewriteBatchedStatements),
  * since a JPA persist per row costs a full round trip to Cloud SQL.
  */
@@ -44,8 +46,10 @@ public class GcsAssetImportService {
 
 	// columns set by the import; keep in sync with the Product mapping
 	static final String INSERT_SQL = "INSERT INTO products (uuid, title, source, supplier, brand, asset_type, "
-			+ "asset_name, orig_asset_name, asset_url, active, created_on, created_by, modified_on, modified_by) "
-			+ "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+			+ "asset_name, orig_asset_name, asset_url, active, created_on, created_by, modified_on, modified_by, "
+			+ "lookup_key_hash, content_md5) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+	static final String MD5_UPDATE_SQL = "UPDATE products SET content_md5 = ? WHERE asset_url = ? AND content_md5 IS NULL";
 
 	private static final int MAX_SAMPLES = 20;
 
@@ -77,9 +81,14 @@ public class GcsAssetImportService {
 		String auditor = auditorAware.getCurrentAuditor().orElse("system");
 		String urlPrefix = "gs://" + bucket + "/" + prefix;
 		Set<String> existingUrls = new HashSet<>();
-		for (String url : productRepo.findAssetUrlsLike(urlPrefix + "%")) {
+		Set<String> missingMd5Urls = new HashSet<>();
+		for (ProductRepository.StoredObject stored : productRepo.findStoredObjectsLike(urlPrefix + "%")) {
+			String url = stored.getAssetUrl();
 			if (url != null && url.startsWith(urlPrefix)) {
 				existingUrls.add(url);
+				if (stored.getContentMd5() == null) {
+					missingMd5Urls.add(url);
+				}
 			}
 		}
 		log.info("Import gs://{}/{} started (dryRun={}), {} assets already stored", bucket, prefix, dryRun,
@@ -88,6 +97,7 @@ public class GcsAssetImportService {
 		long listed = 0, folders = 0, systemFiles = 0, invalid = 0, already = 0;
 		List<String> skippedSamples = new ArrayList<>();
 		List<Product> pending = new ArrayList<>();
+		List<Object[]> md5Updates = new ArrayList<>();
 
 		Page<Blob> page = storage.list(bucket, Storage.BlobListOption.prefix(prefix),
 				Storage.BlobListOption.pageSize(1000));
@@ -113,9 +123,12 @@ public class GcsAssetImportService {
 			String url = "gs://" + bucket + "/" + name;
 			if (existingUrls.contains(url)) {
 				already++;
+				if (missingMd5Urls.contains(url) && blob.getMd5() != null) {
+					md5Updates.add(new Object[] { blob.getMd5(), url });
+				}
 				continue;
 			}
-			pending.add(toProduct(path.get(), url));
+			pending.add(toProduct(path.get(), url, blob.getMd5()));
 		}
 
 		Map<String, Long> byBrand = new TreeMap<>();
@@ -149,14 +162,34 @@ public class GcsAssetImportService {
 			log.info("Import progress: {}/{}", imported + failed, pending.size());
 		}
 
+		long md5Filled = 0;
+		for (int from = 0; from < md5Updates.size(); from += BATCH_SIZE) {
+			List<Object[]> batch = md5Updates.subList(from, Math.min(from + BATCH_SIZE, md5Updates.size()));
+			if (!dryRun) {
+				try {
+					transactionTemplate.executeWithoutResult(status -> jdbcTemplate.batchUpdate(MD5_UPDATE_SQL, batch));
+				} catch (DataAccessException ex) {
+					String error = "MD5 batch starting at " + batch.get(0)[1] + ": " + ex.getMostSpecificCause().getMessage();
+					log.error("Import {}", error, ex);
+					if (errors.size() < MAX_SAMPLES) {
+						errors.add(error);
+					}
+					continue;
+				}
+			}
+			md5Filled += batch.size();
+		}
+
 		ImportReport report = new ImportReport(bucket, prefix, dryRun, listed, folders, systemFiles, invalid, already,
-				imported, failed, byBrand, byAssetType, skippedSamples, errors, System.currentTimeMillis() - start);
-		log.info("Import gs://{}/{} finished: listed={}, imported={}, already={}, failed={}, skipped={} in {} ms",
-				bucket, prefix, listed, imported, already, failed, folders + systemFiles + invalid, report.durationMs());
+				imported, failed, md5Filled, byBrand, byAssetType, skippedSamples, errors,
+				System.currentTimeMillis() - start);
+		log.info("Import gs://{}/{} finished: listed={}, imported={}, already={}, md5Filled={}, failed={}, skipped={} in {} ms",
+				bucket, prefix, listed, imported, already, md5Filled, failed, folders + systemFiles + invalid,
+				report.durationMs());
 		return report;
 	}
 
-	static Product toProduct(GcsAssetPath path, String url) {
+	static Product toProduct(GcsAssetPath path, String url, String contentMd5) {
 		Product product = new Product();
 		product.setUuid(UUID.randomUUID().toString());
 		product.setSource(path.source());
@@ -169,6 +202,10 @@ public class GcsAssetImportService {
 		product.setTitle(path.fileNameWithoutExtension());
 		product.setAssetUrl(url);
 		product.setActive(Boolean.TRUE);
+		product.setContentMd5(contentMd5);
+		// JDBC inserts skip the entity callbacks, so the lookup hash is set here
+		product.setLookupKeyHash(LookupKey.hashOf(product.getSource(), product.getSupplier(), product.getBrand(),
+				product.getAssetName()));
 		return product;
 	}
 
@@ -178,7 +215,7 @@ public class GcsAssetImportService {
 		for (Product p : batch) {
 			rows.add(new Object[] { p.getUuid(), p.getTitle(), p.getSource(), p.getSupplier(), p.getBrand(),
 					p.getAssetType(), p.getAssetName(), p.getOrigAssetName(), p.getAssetUrl(), p.getActive(),
-					timestamp, auditor, timestamp, auditor });
+					timestamp, auditor, timestamp, auditor, p.getLookupKeyHash(), p.getContentMd5() });
 		}
 		return rows;
 	}

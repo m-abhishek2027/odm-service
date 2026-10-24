@@ -37,7 +37,7 @@ class AssetImportControllerTest {
 	private GcsAssetImportService gcsAssetImportService;
 
 	private static ImportReport report(String bucket, String prefix, boolean dryRun) {
-		return new ImportReport(bucket, prefix, dryRun, 3, 1, 0, 0, 0, 2, 0, Map.of("external/autocomp/bosch", 2L),
+		return new ImportReport(bucket, prefix, dryRun, 3, 1, 0, 0, 0, 2, 0, 0, Map.of("external/autocomp/bosch", 2L),
 				Map.of("stills", 2L), List.of(), List.of(), 10);
 	}
 

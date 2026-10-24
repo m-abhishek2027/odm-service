@@ -2,16 +2,19 @@ package com.odm.controller;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -30,13 +33,20 @@ import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.CannotCreateTransactionException;
 
-import com.odm.dto.AssetLookupKey;
-import com.odm.dto.AssetLookupResult;
+import com.odm.dto.AssetLookupResponse;
+import com.odm.dto.AssetMetadataItem;
+import com.odm.dto.LookupResult;
+import com.odm.dto.MetadataUpdateResponse;
+import com.odm.dto.MetadataUpdateResult;
 import com.odm.dto.DigitalAssetListResponse;
 import com.odm.dto.ProductRequest;
 import com.odm.entity.ColorSpace;
 import com.odm.entity.Product;
+import com.odm.exception.InvalidLookupRequestException;
+import com.odm.exception.InvalidUpdateRequestException;
 import com.odm.exception.ResourceNotFoundException;
+import com.odm.service.AssetLookupService;
+import com.odm.service.AssetMetadataUpdateService;
 import com.odm.service.DigitalAssetMetadataService;
 
 @WebMvcTest(DigitalAssetMetadataController.class)
@@ -50,6 +60,12 @@ class DigitalAssetMetadataControllerTest {
 
 	@MockitoBean
 	private DigitalAssetMetadataService digitalAssetMetadataService;
+
+	@MockitoBean
+	private AssetLookupService assetLookupService;
+
+	@MockitoBean
+	private AssetMetadataUpdateService metadataUpdateService;
 
 	private static Product product(String title) {
 		Product product = new Product();
@@ -228,102 +244,229 @@ class DigitalAssetMetadataControllerTest {
 
 	// ==================== POST /digitalAsset/lookup ====================
 
-	private static final String KEY_JSON =
-			"{\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\", \"origAssetName\": \"BC905.tif\"}";
+	private static final String ITEM_JSON = "{\"referenceId\": \"jcr-1\", \"fileName\": \"BC905.tif\", "
+			+ "\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\"}";
+
+	private static String lookupBody(String... items) {
+		return "{\"assets\": [" + String.join(",", items) + "]}";
+	}
+
+	private static AssetLookupResponse lookupResponse(String requestId, LookupResult... results) {
+		return new AssetLookupResponse(requestId, java.time.Instant.parse("2026-10-24T10:15:30.123Z"), "PARTIAL",
+				new AssetLookupResponse.Summary(results.length, 1, 1, 0, 0, 0), List.of(results));
+	}
+
+	private static AssetMetadataItem item() {
+		Product p = product("Running Shoe Hero");
+		p.setAssetName("BC905.tif");
+		p.setSource("External");
+		p.setSupplier("AutoComp");
+		p.setBrand("Bosch");
+		p.setAssetType("stills");
+		p.setColorSpace(ColorSpace.RGB);
+		p.setProductRegion(List.of("na", "eu"));
+		p.setProductLine(List.of("running"));
+		return AssetMetadataItem.from(p);
+	}
 
 	@Test
-	void lookupReturnsResultPerKey() throws Exception {
-		AssetLookupKey found = new AssetLookupKey("External", "AutoComp", "Bosch", "BC905.tif");
-		AssetLookupKey missing = new AssetLookupKey("External", "AutoComp", "Bosch", "nope.tif");
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList())).thenReturn(List.of(
-				new AssetLookupResult(found, true, List.of(product("Bosch"))),
-				new AssetLookupResult(missing, false, List.of())));
+	void lookupReturnsPerItemResults() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("team-x-001",
+				LookupResult.found("jcr-1", item()), LookupResult.notFound("jcr-2")));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
-				.content("[" + KEY_JSON + ", {\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\", \"origAssetName\": \"nope.tif\"}]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).header("X-Request-Id", "team-x-001")
+				.content(lookupBody(ITEM_JSON, "{\"referenceId\": \"jcr-2\", \"fileName\": \"nope.tif\", "
+						+ "\"source\": \"External\", \"supplier\": \"AutoComp\", \"brand\": \"Bosch\"}")))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.length()").value(2))
-				.andExpect(jsonPath("$[0].found").value(true))
-				.andExpect(jsonPath("$[0].key.origAssetName").value("BC905.tif"))
-				.andExpect(jsonPath("$[0].items[0].uuid").value(UUID))
-				.andExpect(jsonPath("$[1].found").value(false))
-				.andExpect(jsonPath("$[1].items.length()").value(0));
+				.andExpect(jsonPath("$.requestId").value("team-x-001"))
+				.andExpect(jsonPath("$.timestamp").value("2026-10-24T10:15:30.123Z"))
+				.andExpect(jsonPath("$.status").value("PARTIAL"))
+				.andExpect(jsonPath("$.summary.requested").value(2))
+				.andExpect(jsonPath("$.summary.found").value(1))
+				.andExpect(jsonPath("$.summary.notFound").value(1))
+				.andExpect(jsonPath("$.results[0].referenceId").value("jcr-1"))
+				.andExpect(jsonPath("$.results[0].status").value("FOUND"))
+				.andExpect(jsonPath("$.results[0].retryable").value(false))
+				.andExpect(jsonPath("$.results[0].matchCount").value(1))
+				.andExpect(jsonPath("$.results[0].asset.uuid").value(UUID))
+				.andExpect(jsonPath("$.results[0].asset.fileName").value("BC905.tif"))
+				.andExpect(jsonPath("$.results[0].asset.colorSpace").value("RGB"))
+				.andExpect(jsonPath("$.results[0].asset.productRegion[1]").value("eu"))
+				.andExpect(jsonPath("$.results[0].asset.productline[0]").value("running"))
+				.andExpect(jsonPath("$.results[0].asset.productLine").doesNotExist())
+				// null fields are left out
+				.andExpect(jsonPath("$.results[0].asset.description").doesNotExist())
+				.andExpect(jsonPath("$.results[1].referenceId").value("jcr-2"))
+				.andExpect(jsonPath("$.results[1].status").value("NOT_FOUND"))
+				.andExpect(jsonPath("$.results[1].retryable").value(true))
+				.andExpect(jsonPath("$.results[1].asset").doesNotExist())
+				.andExpect(jsonPath("$.results[1].matchCount").doesNotExist());
 
-		verify(digitalAssetMetadataService).lookupDigitalAssets(argThat(keys -> keys.size() == 2
-				&& "BC905.tif".equals(keys.get(0).getOrigAssetName()) && "nope.tif".equals(keys.get(1).getOrigAssetName())));
+		verify(assetLookupService).lookup(eq("team-x-001"), argThat(items -> items.size() == 2
+				&& "jcr-1".equals(items.get(0).getReferenceId()) && "nope.tif".equals(items.get(1).getFileName())));
 	}
 
 	@Test
-	void lookupRequiresAllFourFieldsPerKey() throws Exception {
+	void lookupSerializesDuplicateAndInvalidResults() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("r",
+				LookupResult.duplicate("jcr-1", 2),
+				LookupResult.invalid("jcr-2", java.util.Map.of("supplier", "supplier is required"))));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.results[0].status").value("DUPLICATE"))
+				.andExpect(jsonPath("$.results[0].retryable").value(true))
+				.andExpect(jsonPath("$.results[0].matchCount").value(2))
+				.andExpect(jsonPath("$.results[0].asset").doesNotExist())
+				.andExpect(jsonPath("$.results[1].status").value("INVALID"))
+				.andExpect(jsonPath("$.results[1].errors.supplier").value("supplier is required"));
+	}
+
+	@Test
+	void lookupGeneratesRequestIdWhenHeaderMissingOrInvalid() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("x"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isOk());
 		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
-				.content("[" + KEY_JSON + ", {\"source\": \" \", \"brand\": \"Bosch\"}]"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors['[1].source']").value("source is required"))
-				.andExpect(jsonPath("$.errors['[1].supplier']").value("supplier is required"))
-				.andExpect(jsonPath("$.errors['[1].origAssetName']").value("origAssetName is required"))
-				.andExpect(jsonPath("$.errors['[1].brand']").doesNotExist())
-				.andExpect(jsonPath("$.errors['[0].source']").doesNotExist());
+				.header("X-Request-Id", "<script>").content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isOk());
 
-		verify(digitalAssetMetadataService, never()).lookupDigitalAssets(anyList());
+		verify(assetLookupService, times(2)).lookup(argThat(id -> id.matches("odm-[0-9a-f-]{36}")), anyList());
 	}
 
 	@Test
-	void lookupRejectsEmptyArray() throws Exception {
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[]"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.keys").exists());
+	void lookupItemFieldErrorsDoNotFailTheBatch() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenReturn(lookupResponse("r"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
+				.content(lookupBody(ITEM_JSON, "{\"referenceId\": \"jcr-2\", \"source\": \" \"}")))
+				.andExpect(status().isOk());
+
+		verify(assetLookupService).lookup(anyString(), argThat(items -> items.size() == 2));
 	}
 
 	@Test
-	void lookupRejectsMoreThan500Keys() throws Exception {
-		String body = "[" + String.join(",", java.util.Collections.nCopies(501, KEY_JSON)) + "]";
-
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(body))
+	void lookupRequiresReferenceIdOnEveryItem() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON)
+				.content(lookupBody(ITEM_JSON, "{\"fileName\": \"a.jpg\", \"source\": \"s\", \"supplier\": \"s\", \"brand\": \"b\"}")))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.keys").exists());
+				.andExpect(jsonPath("$.errors['assets[1].referenceId']").value("referenceId is required"));
 
-		verify(digitalAssetMetadataService, never()).lookupDigitalAssets(anyList());
+		verify(assetLookupService, never()).lookup(anyString(), anyList());
 	}
 
 	@Test
-	void lookupRejectsNullElement() throws Exception {
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + ", null]"))
+	void lookupDuplicateReferenceIdReturns400() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenThrow(new InvalidLookupRequestException(
+				java.util.Map.of("assets[1].referenceId", "duplicate referenceId, also at assets[0]")));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON, ITEM_JSON)))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors['[1]']").exists());
+				.andExpect(jsonPath("$.errors['assets[1].referenceId']").value("duplicate referenceId, also at assets[0]"));
 	}
 
 	@Test
-	void lookupRejectsSingleObjectBody() throws Exception {
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(KEY_JSON))
+	void lookupRejectsEmptyOrMissingAssets() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("{\"assets\": []}"))
 				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.body").value("invalid type, expected array"));
+				.andExpect(jsonPath("$.errors.assets").value("assets must contain at least one entry"));
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("{}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").exists());
+
+		verify(assetLookupService, never()).lookup(anyString(), anyList());
 	}
 
 	@Test
-	void lookupReturns503WhenDatabaseUnavailable() throws Exception {
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList()))
+	void lookupRejectsMoreThan500Assets() throws Exception {
+		String[] items = new String[501];
+		for (int i = 0; i < items.length; i++) {
+			items[i] = ITEM_JSON.replace("jcr-1", "jcr-" + i);
+		}
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(items)))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").value("at most 500 assets per request"));
+
+		verify(assetLookupService, never()).lookup(anyString(), anyList());
+	}
+
+	@Test
+	void lookupRejectsNullEntry() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON, "null")))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[1]']").value("asset entry must not be null"));
+	}
+
+	@Test
+	void lookupRejectsBareArrayBody() throws Exception {
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + ITEM_JSON + "]"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.body").value("invalid type, expected object"));
+	}
+
+	@Test
+	void lookupReturns503WithRetryAfterWhenDatabaseUnavailable() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList()))
 				.thenThrow(new CannotCreateTransactionException("no connection"));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + "]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
 				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"))
 				.andExpect(jsonPath("$.detail").value("Database is temporarily unavailable, please retry"));
 	}
 
 	@Test
-	void lookupReturns503OnQueryTimeout() throws Exception {
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList()))
-				.thenThrow(new QueryTimeoutException("timeout"));
+	void lookupReturns503OnQueryOrTransactionTimeout() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList()))
+				.thenThrow(new QueryTimeoutException("timeout"))
+				.thenThrow(new org.springframework.transaction.TransactionTimedOutException("10s"));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + "]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"));
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
 				.andExpect(status().isServiceUnavailable());
 	}
 
 	@Test
+	void hibernateDeadlineDuringLazyLoadReturns503() throws Exception {
+		// thrown by Hibernate itself before a statement, outside any repository call, so Spring never translates it
+		when(assetLookupService.lookup(anyString(), anyList()))
+				.thenThrow(new org.hibernate.TransactionException("Transaction timeout expired"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"));
+	}
+
+	@Test
+	void untranslatedJdbcTimeoutReturns503() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList())).thenThrow(new org.hibernate.QueryTimeoutException(
+				"timeout", new java.sql.SQLTimeoutException("Statement cancelled due to timeout"), "select 1"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isServiceUnavailable());
+	}
+
+	@Test
+	void otherUntranslatedPersistenceErrorReturns500WithoutDetails() throws Exception {
+		when(assetLookupService.lookup(anyString(), anyList()))
+				.thenThrow(new jakarta.persistence.PersistenceException("mapping problem in secret table"));
+
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
+				.andExpect(status().isInternalServerError())
+				.andExpect(jsonPath("$.detail").value("Database error"))
+				.andExpect(header().doesNotExist("Retry-After"));
+	}
+
+	@Test
 	void otherDatabaseErrorReturns500WithoutDetails() throws Exception {
-		when(digitalAssetMetadataService.lookupDigitalAssets(anyList()))
+		when(assetLookupService.lookup(anyString(), anyList()))
 				.thenThrow(new InvalidDataAccessResourceUsageException("bad SQL: secret table"));
 
-		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content("[" + KEY_JSON + "]"))
+		mockMvc.perform(post(BASE + "/lookup").contentType(MediaType.APPLICATION_JSON).content(lookupBody(ITEM_JSON)))
 				.andExpect(status().isInternalServerError())
 				.andExpect(jsonPath("$.detail").value("Database error"));
 	}
@@ -374,53 +517,6 @@ class DigitalAssetMetadataControllerTest {
 				.andExpect(jsonPath("$.detail").value("digitalAsset not found: nope"));
 	}
 
-	// ==================== PUT /digitalAsset/{uuid} ====================
-
-	@Test
-	void updateDigitalAssetReturnsUpdatedObject() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class)))
-				.thenReturn(product("Updated"));
-
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
-				.content("{\"title\": \"Updated\"}"))
-				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.title").value("Updated"));
-	}
-
-	@Test
-	void updateDigitalAssetValidatesBody() throws Exception {
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"dpi\": -1}"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.dpi").exists())
-				.andExpect(jsonPath("$.errors.source").doesNotExist())
-				.andExpect(jsonPath("$.errors.supplier").doesNotExist())
-				.andExpect(jsonPath("$.errors.brand").doesNotExist())
-				.andExpect(jsonPath("$.errors.assetName").doesNotExist());
-	}
-
-	@Test
-	void updateDigitalAssetAcceptsColorSpaceEnum() throws Exception {
-		Product updated = product("Bosch");
-		updated.setColorSpace(ColorSpace.CMY);
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class))).thenReturn(updated);
-
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"colorSpace\": \"CMY\"}"))
-				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.colorSpace").value("CMY"));
-
-		verify(digitalAssetMetadataService).updateDigitalAsset(eq(UUID), argThat(r -> r.getColorSpace() == ColorSpace.CMY));
-	}
-
-	@Test
-	void updateDigitalAssetRejectsUnknownColorSpace() throws Exception {
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"colorSpace\": \"sRGB\"}"))
-				.andExpect(status().isBadRequest())
-				.andExpect(jsonPath("$.errors.colorSpace")
-						.value("invalid value 'sRGB', allowed values: RGB, CMY, BIT, GRA, VEC, OTH, WEB"));
-
-		verify(digitalAssetMetadataService, never()).updateDigitalAsset(any(), any());
-	}
-
 	@Test
 	void addDigitalAssetsReportsUnknownColorSpaceByIndex() throws Exception {
 		mockMvc.perform(post(BASE).contentType(MediaType.APPLICATION_JSON)
@@ -434,49 +530,210 @@ class DigitalAssetMetadataControllerTest {
 		verify(digitalAssetMetadataService, never()).addDigitalAssets(anyList());
 	}
 
-	@Test
-	void updateUsesPathUuidAndIgnoresUuidInBody() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class)))
-				.thenReturn(product("Bosch"));
+	// ==================== PUT /digitalAsset/{uuid} (AEM metadata) ====================
 
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
-				.content("{\"uuid\": \"hacked-uuid\", \"createdBy\": \"x\", \"createdOn\": \"2000-01-01T00:00:00\", \"rights\": \"Licensed\"}"))
+	private static final String METADATA_JSON =
+			"{\"metadataModifiedAt\": \"2026-10-25T10:15:30.123Z\", \"dpi\": 300, \"colorSpace\": \"RGB\", \"okThumb\": true}";
+
+	private static MetadataUpdateResponse updateResponse(MetadataUpdateResult... results) {
+		return new MetadataUpdateResponse("r", java.time.Instant.parse("2026-10-25T10:16:00Z"), "SUCCESS",
+				new MetadataUpdateResponse.Summary(results.length, 1, 0, 0, 0, 0, 0), List.of(results));
+	}
+
+	@Test
+	void putMetadataReturns200WithChangedFields() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.updated(UUID, List.of("dpi", "colorSpace"))));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).header("X-Request-Id", "aem-1")
+				.content(METADATA_JSON))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.uuid").value(UUID));
+				.andExpect(jsonPath("$.uuid").value(UUID))
+				.andExpect(jsonPath("$.status").value("UPDATED"))
+				.andExpect(jsonPath("$.changedFields[1]").value("colorSpace"))
+				.andExpect(jsonPath("$.errors").doesNotExist());
 
-		verify(digitalAssetMetadataService).updateDigitalAsset(eq(UUID), argThat(r -> "Licensed".equals(r.getRights())));
-		verify(digitalAssetMetadataService, never()).updateDigitalAsset(eq("hacked-uuid"), any());
+		verify(metadataUpdateService).update(eq("aem-1"), argThat(items -> items.size() == 1
+				&& UUID.equals(items.get(0).getUuid()) && items.get(0).getDpi() == 300.0
+				&& items.get(0).getColorSpace() == ColorSpace.RGB
+				&& items.get(0).getMetadataModifiedAt().equals(java.time.Instant.parse("2026-10-25T10:15:30.123Z"))));
 	}
 
 	@Test
-	void updateDigitalAssetAllowsBlankTitle() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any(ProductRequest.class)))
-				.thenReturn(product("Bosch"));
+	void putMetadataUnchangedIs200() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.unchanged(UUID)));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.status").value("UNCHANGED"));
+	}
+
+	@Test
+	void putMetadataMapsEveryOtherOutcomeToAProblem() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.invalid(UUID, java.util.Map.of("dpi", "must be greater than or equal to 0"))))
+				.thenReturn(updateResponse(MetadataUpdateResult.notFound(UUID)))
+				.thenReturn(updateResponse(MetadataUpdateResult.deleted(UUID)))
+				.thenReturn(updateResponse(MetadataUpdateResult.stale(UUID, java.time.Instant.parse("2026-10-25T11:00:00Z"))));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.updateStatus").value("INVALID"))
+				.andExpect(jsonPath("$.errors.dpi").exists());
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.updateStatus").value("NOT_FOUND"));
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.updateStatus").value("DELETED"));
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.updateStatus").value("STALE"))
+				.andExpect(jsonPath("$.storedMetadataModifiedAt").value("2026-10-25T11:00:00Z"));
+	}
+
+	@Test
+	void putMetadataRejectsBodyUuidThatDiffersFromPath() throws Exception {
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
+				.content("{\"uuid\": \"other-uuid\", \"metadataModifiedAt\": \"2026-10-25T10:15:30Z\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.uuid").value("must match the uuid in the path"));
+
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
+	}
+
+	@Test
+	void putMetadataPassesUnknownFieldsToTheServiceForRejection() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenReturn(updateResponse(MetadataUpdateResult.invalid(UUID, java.util.Map.of("title", "not an updatable metadata field"))));
 
 		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
-				.content("{\"title\": \"\", \"mfg\": null, \"assetName\": \"x.jpg\"}"))
-				.andExpect(status().isOk());
+				.content("{\"metadataModifiedAt\": \"2026-10-25T10:15:30Z\", \"title\": \"x\", \"source\": \"y\"}"))
+				.andExpect(status().isBadRequest());
 
-		verify(digitalAssetMetadataService).updateDigitalAsset(eq(UUID), argThat(r -> "x.jpg".equals(r.getAssetName())));
+		verify(metadataUpdateService).update(anyString(), argThat(items ->
+				items.get(0).getUnknownFields().keySet().equals(java.util.Set.of("title", "source"))));
 	}
 
 	@Test
-	void updateDigitalAssetReturns404WhenMissing() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq("nope"), any()))
-				.thenThrow(new ResourceNotFoundException("digitalAsset not found: nope"));
+	void putMetadataRejectsWrongTypes() throws Exception {
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
+				.content("{\"metadataModifiedAt\": \"yesterday\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.metadataModifiedAt").exists());
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON)
+				.content("{\"metadataModifiedAt\": \"2026-10-25T10:15:30Z\", \"colorSpace\": \"sRGB\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.colorSpace").exists());
 
-		mockMvc.perform(put(BASE + "/nope").contentType(MediaType.APPLICATION_JSON).content("{\"title\": \"x\"}"))
-				.andExpect(status().isNotFound());
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
 	}
 
 	@Test
 	void unexpectedErrorReturns500() throws Exception {
-		when(digitalAssetMetadataService.updateDigitalAsset(eq(UUID), any()))
-				.thenThrow(new IllegalStateException("db down"));
+		when(metadataUpdateService.update(anyString(), anyList())).thenThrow(new IllegalStateException("boom"));
 
-		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content("{\"title\": \"x\"}"))
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
 				.andExpect(status().isInternalServerError())
 				.andExpect(jsonPath("$.detail").value("Internal server error"));
+	}
+
+	@Test
+	void updateReturns503WithRetryAfterWhenDatabaseUnavailable() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList()))
+				.thenThrow(new CannotCreateTransactionException("no connection"));
+
+		mockMvc.perform(put(BASE + "/" + UUID).contentType(MediaType.APPLICATION_JSON).content(METADATA_JSON))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(header().string("Retry-After", "5"));
+	}
+
+	// ==================== POST /digitalAsset/metadata/batch ====================
+
+	private static String batchBody(String... items) {
+		return "{\"assets\": [" + String.join(",", items) + "]}";
+	}
+
+	private static String batchItem(String uuid) {
+		return "{\"uuid\": \"" + uuid + "\", \"metadataModifiedAt\": \"2026-10-25T10:15:30Z\", \"dpi\": 72}";
+	}
+
+	@Test
+	void batchReturnsPerItemResults() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList())).thenReturn(new MetadataUpdateResponse("b-1",
+				java.time.Instant.parse("2026-10-25T10:16:00Z"), "PARTIAL",
+				new MetadataUpdateResponse.Summary(2, 1, 0, 0, 0, 1, 0), List.of(
+						MetadataUpdateResult.updated("u1", List.of("dpi")),
+						MetadataUpdateResult.stale("u2", java.time.Instant.parse("2026-10-25T11:00:00Z")))));
+
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).header("X-Request-Id", "b-1")
+				.content(batchBody(batchItem("u1"), batchItem("u2"))))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.requestId").value("b-1"))
+				.andExpect(jsonPath("$.status").value("PARTIAL"))
+				.andExpect(jsonPath("$.summary.updated").value(1))
+				.andExpect(jsonPath("$.summary.stale").value(1))
+				.andExpect(jsonPath("$.results[0].status").value("UPDATED"))
+				.andExpect(jsonPath("$.results[0].changedFields[0]").value("dpi"))
+				.andExpect(jsonPath("$.results[1].status").value("STALE"))
+				.andExpect(jsonPath("$.results[1].storedMetadataModifiedAt").value("2026-10-25T11:00:00Z"))
+				.andExpect(jsonPath("$.results[1].changedFields").doesNotExist());
+
+		verify(metadataUpdateService).update(eq("b-1"), argThat(items -> items.size() == 2
+				&& "u1".equals(items.get(0).getUuid()) && "u2".equals(items.get(1).getUuid())));
+	}
+
+	@Test
+	void batchRejectsEmptyMissingTooLargeAndNullEntries() throws Exception {
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content("{\"assets\": []}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").value("assets must contain at least one entry"));
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content("{}"))
+				.andExpect(status().isBadRequest());
+		String[] many = new String[501];
+		for (int i = 0; i < many.length; i++) {
+			many[i] = batchItem("u" + i);
+		}
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content(batchBody(many)))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors.assets").value("at most 500 assets per request"));
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON)
+				.content(batchBody(batchItem("u1"), "null")))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[1]']").value("asset entry must not be null"));
+
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
+	}
+
+	@Test
+	void batchRejectsOverlongUuid() throws Exception {
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON)
+				.content(batchBody(batchItem("x".repeat(37)))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[0].uuid']").exists());
+	}
+
+	@Test
+	void batchMissingOrDuplicateUuidReturns400() throws Exception {
+		when(metadataUpdateService.update(anyString(), anyList())).thenThrow(new InvalidUpdateRequestException(
+				java.util.Map.of("assets[1].uuid", "duplicate uuid, also at assets[0]")));
+
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON)
+				.content(batchBody(batchItem("u1"), batchItem("u1"))))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.errors['assets[1].uuid']").value("duplicate uuid, also at assets[0]"));
+	}
+
+	@Test
+	void oversizedBodyReturns413BeforeParsing() throws Exception {
+		String huge = "{\"assets\": [\"" + "x".repeat(2_100_000) + "\"]}";
+
+		mockMvc.perform(post(BASE + "/metadata/batch").contentType(MediaType.APPLICATION_JSON).content(huge))
+				.andExpect(status().isPayloadTooLarge())
+				.andExpect(jsonPath("$.status").value(413));
+
+		verify(metadataUpdateService, never()).update(anyString(), anyList());
 	}
 
 	// ==================== DELETE /digitalAsset/{uuid} ====================

@@ -41,6 +41,7 @@ import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.Storage;
 import com.odm.dto.ImportReport;
 import com.odm.exception.ImportInProgressException;
+import com.odm.lookup.LookupKey;
 import com.odm.repo.ProductRepository;
 
 @ExtendWith(MockitoExtension.class)
@@ -54,7 +55,7 @@ class GcsAssetImportServiceTest {
 	// column positions in GcsAssetImportService.INSERT_SQL
 	private static final int UUID_COL = 0, TITLE = 1, SOURCE = 2, SUPPLIER = 3, BRAND = 4, ASSET_TYPE = 5,
 			ASSET_NAME = 6, ORIG_ASSET_NAME = 7, ASSET_URL = 8, ACTIVE = 9, CREATED_ON = 10, CREATED_BY = 11,
-			MODIFIED_ON = 12, MODIFIED_BY = 13;
+			MODIFIED_ON = 12, MODIFIED_BY = 13, LOOKUP_KEY_HASH = 14, CONTENT_MD5 = 15;
 
 	@Mock
 	private Storage storage;
@@ -87,7 +88,22 @@ class GcsAssetImportServiceTest {
 		Blob blob = mock(Blob.class);
 		when(blob.getName()).thenReturn(name);
 		when(blob.getContentType()).thenReturn(contentType);
+		when(blob.getMd5()).thenReturn("md5-" + name.substring(name.lastIndexOf('/') + 1));
 		return blob;
+	}
+
+	private static ProductRepository.StoredObject stored(String url, String md5) {
+		return new ProductRepository.StoredObject() {
+			@Override
+			public String getAssetUrl() {
+				return url;
+			}
+
+			@Override
+			public String getContentMd5() {
+				return md5;
+			}
+		};
 	}
 
 	@SuppressWarnings("unchecked")
@@ -112,7 +128,8 @@ class GcsAssetImportServiceTest {
 				.contains("source", "supplier", "brand", "asset_type", "asset_name", "orig_asset_name", "asset_url")
 				.doesNotContain("file_source", "orig_file_type", "color_space", "file_size_in_kb", "dpi", "ok_");
 		long placeholders = GcsAssetImportService.INSERT_SQL.chars().filter(c -> c == '?').count();
-		assertThat(placeholders).isEqualTo(14);
+		assertThat(placeholders).isEqualTo(16);
+		assertThat(GcsAssetImportService.INSERT_SQL).contains("lookup_key_hash, content_md5) VALUES");
 	}
 
 	@Test
@@ -140,6 +157,8 @@ class GcsAssetImportServiceTest {
 		assertThat(bosch[CREATED_BY]).isEqualTo("gcs-import");
 		assertThat(bosch[MODIFIED_BY]).isEqualTo("gcs-import");
 		assertThat(bosch[CREATED_ON]).isInstanceOf(Timestamp.class).isEqualTo(bosch[MODIFIED_ON]);
+		assertThat(bosch[LOOKUP_KEY_HASH]).isEqualTo(LookupKey.hashOf("external", "autocomp", "bosch", "13cb25186_01_009.jpg"));
+		assertThat(bosch[CONTENT_MD5]).isEqualTo("md5-13cb25186_01_009.jpg");
 
 		assertThat(rows.get(1)[BRAND]).isEqualTo("delphi");
 		assertThat(rows.get(1)[ASSET_TYPE]).isEqualTo("stills");
@@ -181,14 +200,50 @@ class GcsAssetImportServiceTest {
 	@Test
 	void reRunSkipsAlreadyImportedObjects() {
 		String existing = "gs://" + BUCKET + "/" + BASE + "a.jpg";
-		when(productRepo.findAssetUrlsLike("gs://" + BUCKET + "/" + PREFIX + "%")).thenReturn(List.of(existing));
+		when(productRepo.findStoredObjectsLike("gs://" + BUCKET + "/" + PREFIX + "%"))
+				.thenReturn(List.of(stored(existing, "known")));
 		bucketContains(blob(BASE + "a.jpg", "image/jpeg"), blob(BASE + "b.jpg", "image/jpeg"));
 
 		ImportReport report = service.importAssets(BUCKET, PREFIX, false);
 
 		assertThat(report.alreadyImported()).isEqualTo(1);
 		assertThat(report.imported()).isEqualTo(1);
+		assertThat(report.md5Filled()).isZero();
 		assertThat(insertedRows()).extracting(r -> r[ASSET_NAME]).containsExactly("b.jpg");
+		verify(jdbcTemplate, never()).batchUpdate(eq(GcsAssetImportService.MD5_UPDATE_SQL), anyList());
+	}
+
+	@Test
+	@SuppressWarnings("unchecked")
+	void fillsMissingMd5OfAlreadyImportedObjects() {
+		String a = "gs://" + BUCKET + "/" + BASE + "a.jpg", b = "gs://" + BUCKET + "/" + BASE + "b.jpg";
+		when(productRepo.findStoredObjectsLike("gs://" + BUCKET + "/" + PREFIX + "%"))
+				.thenReturn(List.of(stored(a, null), stored(b, "known")));
+		bucketContains(blob(BASE + "a.jpg", "image/jpeg"), blob(BASE + "b.jpg", "image/jpeg"));
+
+		ImportReport report = service.importAssets(BUCKET, PREFIX, false);
+
+		assertThat(report.alreadyImported()).isEqualTo(2);
+		assertThat(report.imported()).isZero();
+		assertThat(report.md5Filled()).isEqualTo(1);
+		ArgumentCaptor<List<Object[]>> captor = ArgumentCaptor.forClass(List.class);
+		verify(jdbcTemplate).batchUpdate(eq(GcsAssetImportService.MD5_UPDATE_SQL), captor.capture());
+		assertThat(captor.getValue()).singleElement().satisfies(row -> {
+			assertThat(row[0]).isEqualTo("md5-a.jpg");
+			assertThat(row[1]).isEqualTo(a);
+		});
+	}
+
+	@Test
+	void dryRunCountsMissingMd5WithoutWriting() {
+		String a = "gs://" + BUCKET + "/" + BASE + "a.jpg";
+		when(productRepo.findStoredObjectsLike("gs://" + BUCKET + "/" + PREFIX + "%")).thenReturn(List.of(stored(a, null)));
+		bucketContains(blob(BASE + "a.jpg", "image/jpeg"));
+
+		ImportReport report = service.importAssets(BUCKET, PREFIX, true);
+
+		assertThat(report.md5Filled()).isEqualTo(1);
+		verify(jdbcTemplate, never()).batchUpdate(anyString(), anyList());
 	}
 
 	@Test
